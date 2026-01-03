@@ -2,113 +2,85 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import requests
-import urllib3
-from io import StringIO
+import os # 用來檢查檔案是否存在
 from datetime import datetime, timedelta
 
-# --- 設定：關閉 SSL 警告 (讓畫面乾淨) ---
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 # --- 網頁設定 ---
-st.set_page_config(page_title="專業操盤手選股 (雲端修正版)", layout="wide")
-st.title("🤖 台股全自動掃描：多策略戰情室 (雲端修正版)")
+st.set_page_config(page_title="專業操盤手選股 (CSV版)", layout="wide")
+st.title("🤖 台股全自動掃描：多策略戰情室 (CSV穩定版)")
 st.markdown("""
-**狀態：** 雲端專用版 (使用 Requests 強制繞過 SSL)。
-**策略：** 假跌破 200MA、強勢回調、布林突破、糾結突破。
+**資料來源：** 讀取 GitHub 上的靜態清單 (tw_stocks.csv)，包含全台上市櫃股票。
+**優點：** 速度快、穩定、不漏接。
 """)
+
+# --- 核心函數：讀取 CSV ---
+@st.cache_data
+def load_stock_list():
+    """
+    嘗試讀取目錄下的 tw_stocks.csv
+    """
+    file_path = 'tw_stocks.csv'
+    stock_map = {}
+    
+    if os.path.exists(file_path):
+        try:
+            # 讀取 CSV
+            df = pd.read_csv(file_path, dtype=str) # 強制讀成字串
+            for index, row in df.iterrows():
+                code = row['code']
+                name = row['name']
+                stock_map[code] = name
+            return stock_map
+        except Exception as e:
+            st.error(f"讀取 CSV 失敗: {e}")
+            return {}
+    else:
+        # 如果使用者忘記上傳 CSV，至少給個備份名單以免報錯
+        st.warning("⚠️ 找不到 tw_stocks.csv！請確認你有將該檔案上傳到 GitHub。目前使用備用名單。")
+        return {
+            '2330': '2330 台積電', '2317': '2317 鴻海', '2603': '2603 長榮',
+            '2454': '2454 聯發科', '2382': '2382 廣達'
+        }
 
 # --- 側邊欄設定 ---
 st.sidebar.header("⚙️ 掃描參數")
 
 source_option = st.sidebar.radio(
     "掃描範圍：",
-    ("全台股 (上市+上櫃)", "手動輸入代號")
+    ("全台股 (讀取 CSV)", "手動輸入代號")
 )
 
-# 內建熱門股備份 (防止萬一連線真的全掛還有東西看)
-BACKUP_NAMES = {
-    '2330': '2330 台積電', '2317': '2317 鴻海', '2454': '2454 聯發科', '2308': '2308 台達電',
-    '2382': '2382 廣達', '2303': '2303 聯電', '2881': '2881 富邦金', '2412': '2412 中華電',
-    '2882': '2882 國泰金', '2603': '2603 長榮', '2356': '2356 英業達', '0050': '0050 元大台灣50'
-}
+# 載入清單
+all_stock_map = load_stock_list()
 
 if source_option == "手動輸入代號":
-    default_tickers = "2330, 2317, 2603, 2356, 3231, 2382, 0050, 8069, 5347, 6274"
-    ticker_input = st.sidebar.text_area("輸入代號", default_tickers)
+    default_tickers = "2330, 2317, 2603, 3033, 6116, 2615"
+    ticker_input = st.sidebar.text_area("輸入代號 (逗號分隔)", default_tickers)
 else:
     ticker_input = ""
-    st.sidebar.info("系統自動抓取上市櫃清單 (暴力繞過 SSL)...")
+    st.sidebar.info(f"已載入 {len(all_stock_map)} 檔股票 (來自 CSV)。")
 
 min_vol_limit = st.sidebar.number_input("最小5日均量 (張)", value=2000, step=500)
 lookback_days = st.sidebar.slider("資料回溯天數", 300, 600, 400)
 
-# --- 核心函數 ---
+# --- 輔助函數 ---
 
-@st.cache_data
-def get_tw_stocks_with_names():
-    """
-    爬取上市櫃代號 (改用 requests 下載原始碼，再丟給 pandas)
-    """
-    urls = [
-        "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", # 上市
-        "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"  # 上櫃
-    ]
-    stock_map = BACKUP_NAMES.copy()
-    
-    # 偽裝成瀏覽器 Header
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    
-    try:
-        for url in urls:
-            # 1. 先用 requests 下載 (verify=False 是關鍵！強制忽略憑證)
-            res = requests.get(url, headers=headers, verify=False)
-            res.encoding = 'cp950' # 設定編碼
-            
-            # 2. 把下載回來的文字 (res.text) 偽裝成檔案 (StringIO)，餵給 pandas
-            # 這樣 Pandas 就以為是在讀一個文字檔，不會去檢查 SSL
-            dfs = pd.read_html(StringIO(res.text))
-            df = dfs[0]
-            
-            # 後續處理邏輯不變
-            df.columns = df.iloc[0]
-            df = df.iloc[1:]
-            col_name = df.columns[0]
-            
-            for item in df[col_name]:
-                try:
-                    item_str = str(item).strip()
-                    code_str = item_str.split()[0]
-                    if code_str.isdigit() and len(code_str) == 4:
-                        stock_map[code_str] = item_str
-                except:
-                    continue
-        return stock_map
-    except Exception as e:
-        # 如果真的還是不行，只顯示備份名單，不要讓程式崩潰
-        st.error(f"雲端連線證交所失敗，已切換至備用名單。錯誤: {e}")
-        return stock_map
-
-def get_target_tickers(source_type, manual_input):
-    all_stock_map = get_tw_stocks_with_names()
-    if source_type == "手動輸入代號":
+def get_target_map(source_type, manual_input):
+    if source_type == "全台股 (讀取 CSV)":
+        return all_stock_map
+    else:
         manual_input = manual_input.replace("\n", ",").replace(" ", ",")
         code_list = [t.strip() for t in manual_input.split(',') if t.strip()]
         target_map = {}
         for code in code_list:
             target_map[code] = all_stock_map.get(code, code)
         return target_map
-    else:
-        return all_stock_map
 
 def calculate_indicators(df):
-    """計算技術指標"""
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA10'] = df['Close'].rolling(window=10).mean()
     df['MA15'] = df['Close'].rolling(window=15).mean()
-    df['MA20'] = df['Close'].rolling(window=20).mean() # 月線
+    df['MA20'] = df['Close'].rolling(window=20).mean()
     df['MA60'] = df['Close'].rolling(window=60).mean()
     df['MA200'] = df['Close'].rolling(window=200).mean()
     df['Vol_MA5'] = df['Volume'].rolling(window=5).mean()
@@ -124,7 +96,6 @@ def calculate_indicators(df):
     df['BB_Upper'] = df['MA20'] + (2 * std20)
     df['BB_Lower'] = df['MA20'] - (2 * std20)
     df['BB_Width'] = (df['BB_Upper'] - df['BB_Lower']) / df['MA20']
-    
     return df
 
 def analyze_stock(ticker, stock_name, days, min_vol_zhang):
@@ -147,7 +118,7 @@ def analyze_stock(ticker, stock_name, days, min_vol_zhang):
         
         results = {}
         
-        # 策略 1: 200MA 假跌破 (5日)
+        # 策略 1: 假跌破
         s1_status = None
         last_6_days = df.iloc[-6:]
         found_crossover = False
@@ -197,14 +168,13 @@ def analyze_stock(ticker, stock_name, days, min_vol_zhang):
 # --- 主程式 ---
 
 if st.button("🚀 啟動多策略掃描"):
-    with st.spinner("正在掃描全市場 (使用 Requests 下載技術)..."):
-        target_map = get_target_tickers(source_option, ticker_input)
+    target_map = get_target_map(source_option, ticker_input)
     
     if not target_map:
-        st.error("清單抓取失敗，請檢查網路。")
+        st.error("無法讀取股票清單，請檢查 CSV 檔案。")
     else:
         target_tickers = list(target_map.keys())
-        st.info(f"目標 {len(target_tickers)} 檔，門檻 {min_vol_limit} 張。")
+        st.info(f"目標 {len(target_tickers)} 檔 (全台股)，門檻 {min_vol_limit} 張。")
         
         res_s1, res_s2, res_s3, res_s4 = [], [], [], []
         stock_cache = {}
@@ -255,19 +225,15 @@ if st.button("🚀 啟動多策略掃描"):
         t1, t2, t3, t4 = st.tabs(["🛡️ 假跌破 (5日)", "📈 回調 (15MA)", "💥 布林突破", "🚀 糾結突破"])
         
         with t1:
-            st.caption("條件：5日內站上 200MA")
             if res_s1: st.table(pd.DataFrame(res_s1))
             else: st.warning("無符合")
         with t2:
-            st.caption("條件：回測 15MA + 顯示 20MA 乖離")
             if res_s2: st.table(pd.DataFrame(res_s2))
             else: st.warning("無符合")
         with t3:
-            st.caption("條件：布林壓縮 + 帶量突破 + 顯示 20MA 乖離")
             if res_s3: st.table(pd.DataFrame(res_s3))
             else: st.warning("無符合")
         with t4:
-            st.caption("條件：均線糾結 + 漲幅 > 4% + 帶量突破")
             if res_s4: st.table(pd.DataFrame(res_s4))
             else: st.warning("無符合")
             
@@ -276,9 +242,4 @@ if st.button("🚀 啟動多策略掃描"):
         if all_hits:
             target = st.selectbox("選擇個股查看走勢", all_hits)
             df = stock_cache[target].iloc[-120:]
-            c1, c2, c3 = st.columns(3)
-            c1.metric("收盤", f"{df.iloc[-1]['Close']:.2f}")
-            c2.metric("15MA", f"{df.iloc[-1]['MA15']:.2f}")
-            c3.metric("200MA", f"{df.iloc[-1]['MA200']:.2f}")
-            st.line_chart(df[['Close', 'MA5', 'MA15', 'MA20', 'MA200']], color=["#FFF", "#0FF", "#FF0", "#F0F", "#F00"])
-            st.caption("圖例：白(收盤), 藍(5MA), 黃(15MA), 紫(20MA), 紅(200MA)")
+            st.line_chart(df[['Close', 'MA5', 'MA15', 'MA20', 'MA200']])
