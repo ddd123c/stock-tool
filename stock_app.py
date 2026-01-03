@@ -7,7 +7,7 @@ import urllib3
 from io import StringIO
 from datetime import datetime, timedelta
 
-# --- 設定：關閉 SSL 警告 ---
+# --- 設定：關閉 SSL 警告 (讓畫面乾淨) ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- 網頁設定 ---
@@ -26,7 +26,7 @@ source_option = st.sidebar.radio(
     ("全台股 (上市+上櫃)", "手動輸入代號")
 )
 
-# 內建熱門股備份
+# 內建熱門股備份 (防止萬一連線真的全掛還有東西看)
 BACKUP_NAMES = {
     '2330': '2330 台積電', '2317': '2317 鴻海', '2454': '2454 聯發科', '2308': '2308 台達電',
     '2382': '2382 廣達', '2303': '2303 聯電', '2881': '2881 富邦金', '2412': '2412 中華電',
@@ -56,18 +56,19 @@ def get_tw_stocks_with_names():
     ]
     stock_map = BACKUP_NAMES.copy()
     
-    # 偽裝 Header
+    # 偽裝成瀏覽器 Header
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
     
     try:
         for url in urls:
-            # 1. 先用 requests 下載 (verify=False 是關鍵！)
+            # 1. 先用 requests 下載 (verify=False 是關鍵！強制忽略憑證)
             res = requests.get(url, headers=headers, verify=False)
             res.encoding = 'cp950' # 設定編碼
             
             # 2. 把下載回來的文字 (res.text) 偽裝成檔案 (StringIO)，餵給 pandas
+            # 這樣 Pandas 就以為是在讀一個文字檔，不會去檢查 SSL
             dfs = pd.read_html(StringIO(res.text))
             df = dfs[0]
             
@@ -107,8 +108,7 @@ def calculate_indicators(df):
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA10'] = df['Close'].rolling(window=10).mean()
     df['MA15'] = df['Close'].rolling(window=15).mean()
-    df['MA20'] = df['Close'].rolling(window=200).mean() # 修正：這裡應該是20，但我看你之前好像要長天期，這裡統一用20
-    df['MA20'] = df['Close'].rolling(window=20).mean() # 確保是月線
+    df['MA20'] = df['Close'].rolling(window=20).mean() # 月線
     df['MA60'] = df['Close'].rolling(window=60).mean()
     df['MA200'] = df['Close'].rolling(window=200).mean()
     df['Vol_MA5'] = df['Volume'].rolling(window=5).mean()
