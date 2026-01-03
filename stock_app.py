@@ -2,17 +2,23 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import requests
+import urllib3 # 新增這個套件用來管理連線警告
+from io import StringIO
 from datetime import datetime, timedelta
 
+# --- 忽略 SSL 警告 ---
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 # --- 網頁設定 ---
-st.set_page_config(page_title="專業操盤手選股 (旗艦版)", layout="wide")
-st.title("🤖 台股全自動掃描：多策略戰情室 (含股名顯示)")
+st.set_page_config(page_title="專業操盤手選股 (SSL修復版)", layout="wide")
+st.title("🤖 台股全自動掃描：多策略戰情室 (SSL修復版)")
 st.markdown("""
 **策略總覽：**
 1. **🛡️ 假跌破翻揚**：5日內站上 200MA (標記新入選)。
 2. **📈 強勢回調**：多頭排列 + 回測 **15MA** (顯示 20MA 乖離)。
 3. **💥 布林突破**：布林壓縮 + 帶量突破 (顯示 20MA 乖離)。
-4. **🚀 糾結突破 (新)**：均線糾結 + 漲幅 > 4% + 爆量 (圖片策略)。
+4. **🚀 糾結突破**：均線糾結 + 漲幅 > 4% + 爆量。
 """)
 
 # --- 側邊欄設定 ---
@@ -24,6 +30,17 @@ source_option = st.sidebar.radio(
     "掃描範圍：",
     ("全台股 (上市+上櫃)", "手動輸入代號")
 )
+
+# 內建熱門股名稱備份
+BACKUP_NAMES = {
+    '2330': '2330 台積電', '2317': '2317 鴻海', '2454': '2454 聯發科', '2308': '2308 台達電',
+    '2382': '2382 廣達', '2303': '2303 聯電', '2881': '2881 富邦金', '2412': '2412 中華電',
+    '2882': '2882 國泰金', '2603': '2603 長榮', '3711': '3711 日月光', '2886': '2886 兆豐金',
+    '3231': '3231 緯創', '3008': '3008 大立光', '2609': '2609 陽明', '2615': '2615 萬海',
+    '2356': '2356 英業達', '0050': '0050 元大台灣50', '0056': '0056 元大高股息',
+    '8069': '8069 元太', '5347': '5347 世界', '6274': '6274 台燿', '3037': '3037 欣興',
+    '3034': '3034 聯詠', '2379': '2379 瑞昱', '2345': '2345 智邦', '3035': '3035 智原'
+}
 
 if source_option == "手動輸入代號":
     default_tickers = "2330, 2317, 2603, 2356, 3231, 2382, 0050, 8069, 5347, 6274"
@@ -42,56 +59,59 @@ lookback_days = st.sidebar.slider("資料回溯天數", 300, 600, 400)
 @st.cache_data
 def get_tw_stocks_with_names():
     """
-    爬取上市櫃代號與名稱
-    回傳格式: dict {'2330': '2330 台積電', '2317': '2317 鴻海'...}
+    爬取上市櫃代號與名稱 (加入 SSL 忽略與偽裝)
     """
     urls = [
         "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", # 上市
         "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"  # 上櫃
     ]
-    stock_map = {} # 用來存 代號 -> 完整名稱
+    stock_map = BACKUP_NAMES.copy()
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
     
     try:
         for url in urls:
-            dfs = pd.read_html(url, encoding='cp950')
+            # 關鍵修改：verify=False (忽略 SSL 憑證檢查)
+            response = requests.get(url, headers=headers, verify=False)
+            response.encoding = 'cp950'
+            
+            dfs = pd.read_html(StringIO(response.text))
             df = dfs[0]
+            
             df.columns = df.iloc[0]
             df = df.iloc[1:]
-            col_name = df.columns[0] # 通常是 "有價證券代號及名稱"
+            
+            col_name = df.columns[0]
             
             for item in df[col_name]:
                 try:
-                    # item 內容範例: "2330 台積電"
                     item_str = str(item).strip()
-                    code_str = item_str.split()[0] # 取出 2330
+                    code_str = item_str.split()[0]
                     
                     if code_str.isdigit() and len(code_str) == 4:
-                        # 存入字典: Key=2330, Value="2330 台積電"
                         stock_map[code_str] = item_str
                 except:
                     continue
         return stock_map
     except Exception as e:
-        st.error(f"清單抓取失敗: {e}")
-        return {}
+        st.warning(f"無法連線證交所 (使用內建備份清單): {e}")
+        return stock_map
 
 def get_target_tickers(source_type, manual_input):
-    # 先抓取所有股票的對照表 (為了手動輸入也能顯示名稱，我們盡量抓全表)
     all_stock_map = get_tw_stocks_with_names()
     
     if source_type == "手動輸入代號":
         manual_input = manual_input.replace("\n", ",").replace(" ", ",")
         code_list = [t.strip() for t in manual_input.split(',') if t.strip()]
         
-        # 建構回傳的字典，如果找不到名稱就只顯示代號
         target_map = {}
         for code in code_list:
-            # 嘗試從全表中找名稱，找不到就用代號本身
             target_map[code] = all_stock_map.get(code, code)
         return target_map
         
     else:
-        # 全台股模式，直接回傳抓到的整張表
         return all_stock_map
 
 def calculate_indicators(df):
@@ -124,9 +144,6 @@ def calculate_indicators(df):
     return df
 
 def analyze_stock(ticker, stock_name, days, min_vol_zhang):
-    """
-    新增參數: stock_name (顯示名稱)
-    """
     symbol = f"{ticker}.TW"
     end_date = datetime.now()
     start_date = end_date - timedelta(days=days)
@@ -150,7 +167,7 @@ def analyze_stock(ticker, stock_name, days, min_vol_zhang):
         
         results = {}
         
-        # --- 策略 1: 200MA 假跌破 (5日窗口) ---
+        # --- 策略 1: 200MA 假跌破 ---
         s1_status = None
         last_6_days = df.iloc[-6:]
         found_crossover = False
@@ -198,8 +215,8 @@ def analyze_stock(ticker, stock_name, days, min_vol_zhang):
         if not results: return None
         
         return {
-            "代號": stock_name, # 這裡改回傳完整名稱 (2330 台積電)
-            "Ticker": ticker,   # 原始代號 (2330) 留著作圖用
+            "代號": stock_name, 
+            "Ticker": ticker,   
             "收盤": float(f"{curr['Close']:.2f}"),
             "200MA": float(f"{curr['MA200']:.2f}"),
             "20MA乖離": float(f"{bias_20:.2f}"),
@@ -215,14 +232,12 @@ def analyze_stock(ticker, stock_name, days, min_vol_zhang):
 
 if st.button("🚀 啟動多策略掃描"):
     
-    with st.spinner("正在掃描全市場... (請耐心等候)"):
-        # target_map 是一個字典: {'2330': '2330 台積電', ...}
+    with st.spinner("正在掃描全市場 (已啟用 SSL 修復)..."):
         target_map = get_target_tickers(source_option, ticker_input)
     
     if not target_map:
         st.error("清單抓取失敗。")
     else:
-        # 取出所有代號 (Key)
         target_tickers = list(target_map.keys())
         st.info(f"目標 {len(target_tickers)} 檔，門檻 {min_vol_limit} 張。")
         
@@ -233,21 +248,18 @@ if st.button("🚀 啟動多策略掃描"):
         status_text = st.empty()
         
         for i, ticker in enumerate(target_tickers):
-            # 從 map 取得完整名稱
             stock_name = target_map[ticker]
             
             status_text.text(f"分析中 ({i+1}/{len(target_tickers)}): {stock_name}")
             my_bar.progress((i+1)/len(target_tickers))
             
-            # 傳入 stock_name 給函數
             res = analyze_stock(ticker, stock_name, lookback_days, min_vol_limit)
             
             if res:
-                # Cache 用原始代號當 Key，方便作圖
                 stock_cache[res['代號']] = res['df']
                 
                 base_info = {
-                    "股票": res['代號'], # 顯示名稱 (2330 台積電)
+                    "股票": res['代號'], 
                     "收盤": res['收盤'], 
                     "均量": res['均量']
                 }
@@ -308,7 +320,6 @@ if st.button("🚀 啟動多策略掃描"):
             
         # 畫圖區
         st.markdown("---")
-        # 下拉選單現在會顯示 "2330 台積電"
         all_hits = list(stock_cache.keys())
         if all_hits:
             target = st.selectbox("選擇個股查看走勢", all_hits)
