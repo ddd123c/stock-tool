@@ -6,28 +6,35 @@ import os
 from datetime import datetime, timedelta
 
 # --- 網頁設定 ---
-st.set_page_config(page_title="專業操盤手選股 (精度修復版)", layout="wide")
-st.title("🤖 台股全自動掃描：多策略戰情室 (精度修復版)")
+st.set_page_config(page_title="專業操盤手選股 (CSV+精度修復版)", layout="wide")
+st.title("🤖 台股全自動掃描：多策略戰情室 (CSV+精度修復版)")
 st.markdown("""
-**修復：** 解決批次下載時因「非交易日空值」導致 200MA 計算偏差的問題。
-**狀態：** ✅ 200MA 精準度已校正。
+**資料來源：** 讀取 GitHub 上的 `tw_stocks.csv`。
+**精度修復：** 已修正批次下載時 200MA 計算誤差，強制濾除無交易日。
 """)
 
-# --- 1. 讀取 CSV 清單 ---
+# --- 1. 讀取 CSV 清單 (搭配你寫的 generate_stock_csv.py) ---
 @st.cache_data
 def load_stock_list():
     file_path = 'tw_stocks.csv'
     stock_map = {}
+    
+    # 檢查檔案是否存在
     if os.path.exists(file_path):
         try:
+            # dtype=str 非常重要，避免 0050 被讀成 50
             df = pd.read_csv(file_path, dtype=str)
             for index, row in df.iterrows():
-                stock_map[row['code']] = row['name']
+                # 相容性處理：你的腳本產生的欄位是 code, name
+                code = row['code']
+                name = row['name']
+                stock_map[code] = name
             return stock_map
-        except:
+        except Exception as e:
+            st.error(f"讀取 CSV 格式錯誤: {e}")
             return {}
     else:
-        st.warning("⚠️ 找不到 tw_stocks.csv，請確認已上傳 GitHub。")
+        st.warning("⚠️ 找不到 tw_stocks.csv，請確認已上傳到 GitHub。目前使用備用名單。")
         return {'2330': '2330 台積電', '2317': '2317 鴻海', '2603': '2603 長榮'}
 
 all_stock_map = load_stock_list()
@@ -46,16 +53,21 @@ else:
 min_vol_limit = st.sidebar.number_input("最小5日均量 (張)", value=2000, step=500)
 lookback_days = st.sidebar.slider("資料回溯天數", 300, 600, 400)
 
-# --- 3. 核心指標計算 (精準版) ---
+# --- 3. 核心指標計算 (含 200MA 精度修復) ---
 def calculate_indicators(df):
-    # --- 關鍵修復：強力清洗無效資料 ---
-    # 批次下載時，Yahoo 會塞入很多 NaN 列來對齊日期
-    # 我們必須把 'Close' 是 NaN 的列全部丟掉，只留真的有交易的日子
+    """
+    計算技術指標，並在此處進行資料清洗以修正 MA 誤差
+    """
+    # [關鍵修復]：這一步至關重要！
+    # 批次下載時，Yahoo 會為了對齊日期填入 NaN
+    # 我們必須先把 'Close' 是空值的列刪掉，只留真正有交易的日子
+    # 這樣 `rolling(200)` 才會是「真實交易日的 200 天」，而不是「日曆天的 200 天」
     df = df.dropna(subset=['Close'])
     
-    # 確保資料長度足夠算 200MA
+    # 再次確認資料長度是否足夠
     if len(df) < 205: return None
     
+    # 這裡的算法就跟你原本的程式碼一模一樣了，但數據已經乾淨了
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA10'] = df['Close'].rolling(window=10).mean()
     df['MA15'] = df['Close'].rolling(window=15).mean()
@@ -64,6 +76,7 @@ def calculate_indicators(df):
     df['MA200'] = df['Close'].rolling(window=200).mean()
     df['Vol_MA5'] = df['Volume'].rolling(window=5).mean()
     
+    # KD指標
     low_9 = df['Low'].rolling(window=9).min()
     high_9 = df['High'].rolling(window=9).max()
     rsv = (df['Close'] - low_9) / (high_9 - low_9) * 100
@@ -71,6 +84,7 @@ def calculate_indicators(df):
     df['K'] = rsv.ewm(com=2, adjust=False).mean()
     df['D'] = df['K'].ewm(com=2, adjust=False).mean()
     
+    # 布林通道
     std20 = df['Close'].rolling(window=20).std()
     df['BB_Upper'] = df['MA20'] + (2 * std20)
     df['BB_Lower'] = df['MA20'] - (2 * std20)
@@ -81,10 +95,9 @@ def calculate_indicators(df):
 # --- 4. 單檔分析邏輯 ---
 def analyze_single_stock(df, code, stock_name, min_vol_zhang):
     try:
-        # 計算指標 (內部已經包含 dropna 清洗)
+        # 先計算指標 (內部已包含 dropna 清洗)
         df = calculate_indicators(df)
         
-        # 如果清洗後資料不足，直接返回
         if df is None: return None
         
         # 量能過濾
@@ -181,7 +194,7 @@ if st.button("🚀 啟動多策略掃描"):
             my_bar.progress((i) / len(target_codes))
             
             try:
-                # 使用 threads=True 加速下載
+                # 下載數據 (群組化)
                 data = yf.download(symbols_str, period="2y", group_by='ticker', threads=True, progress=False)
                 
                 for code in batch_codes:
@@ -189,6 +202,7 @@ if st.button("🚀 啟動多策略掃描"):
                     stock_name = target_map.get(code, code)
                     
                     try:
+                        # 處理單檔與多檔 (取出特定的 dataframe)
                         if len(batch_codes) == 1:
                             df = data
                         else:
@@ -198,7 +212,7 @@ if st.button("🚀 啟動多策略掃描"):
                         
                         if df is None or df.empty: continue
 
-                        # 這裡傳入的是原始 df，會在 analyze_single_stock 內部進行 dropna 清洗
+                        # 傳入複製的 df，analyze_single_stock 會呼叫 calculate_indicators 進行 dropna 清洗
                         res = analyze_single_stock(df.copy(), code, stock_name, min_vol_limit)
                         
                         if res:
@@ -242,6 +256,7 @@ if st.button("🚀 啟動多策略掃描"):
         my_bar.empty()
         status_text.text("全市場掃描完成！")
         
+        # 顯示結果
         t1, t2, t3, t4 = st.tabs(["🛡️ 假跌破 (5日)", "📈 回調 (15MA)", "💥 布林突破", "🚀 糾結突破"])
         
         with t1:
