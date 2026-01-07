@@ -29,7 +29,7 @@ source_option = st.sidebar.radio(
 
 # 2. 條件設定
 st.sidebar.subheader("2. 篩選條件")
-min_vol_limit = st.sidebar.number_input("最小5日均量 (張)", value=2000, step=500)
+min_vol_limit = st.sidebar.number_input("最小5日均量 (張)", value=4000, step=500)
 
 # --- 核心函數 ---
 
@@ -286,3 +286,4 @@ if st.button("🚀 啟動掃描"):
         if selected:
             df_plot = stock_cache[selected]
             st.line_chart(df_plot['Close'])
+
