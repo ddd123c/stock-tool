@@ -11,7 +11,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- 網頁設定 ---
 st.set_page_config(page_title="專業操盤手選股 (數值修正版)", layout="wide")
-st.title("🤖 台股全自動掃描：數值修正極速版")
+st.title("選股")
 st.markdown("""
 **修正說明：** 已強制設定 `auto_adjust=False`，確保抓取 **原始股價** (非還原權值)，
 讓 200MA 與技術指標數值與您的原始程式碼完全一致。
