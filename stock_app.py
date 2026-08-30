@@ -22,7 +22,7 @@ with st.sidebar:
 def get_stock_list():
     return pd.read_csv("tw_stocks.csv", dtype={"code": str})
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=300)
 def get_prices(tickers):
     return yf.download(list(tickers), period="2y", group_by="ticker",
                        auto_adjust=False, progress=False, threads=True)
@@ -87,14 +87,24 @@ stocks["ticker"] = stocks["code"].map(lambda x: f"{x}.TW")
 tab1, tab2, tab3 = st.tabs(["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東", "🏦 法人連續買超"])
 
 with tab1:
-    st.info("這一頁專注技術面：只保留站上 200MA 不超過 5 個交易日的標的，適合盤中/盤後快速查看。這裡不混入每週大股東資料。")
-    if st.button("🚀 開始量化掃描", type="primary"):
-        with st.spinner("正在掃描台股技術面資料..."):
-            result = scan_technical(stocks, min_vol, strategy_filter)
+    @st.fragment(run_every="5m")
+    def _technical_live_panel():
+        st.info("這一頁專注技術面：只保留站上 200MA 不超過 5 個交易日的標的。開啟後會自動掃描；也可隨時按「🔄 立即掃描」。資料來源為 Yahoo Finance，實際更新速度取決於資料源。")
+        c1, c2 = st.columns([1, 4])
+        with c1:
+            manual_scan = st.button("🔄 立即掃描", type="primary", key="technical_manual_scan")
+        with c2:
+            st.caption("⚡ 自動掃描：每 5 分鐘｜手動按鈕：立即重新抓取")
+
+        if manual_scan:
+            get_prices.clear()
+
+        try:
+            with st.spinner("正在掃描台股技術面資料..."):
+                result = scan_technical(stocks, min_vol, strategy_filter)
             if result.empty:
                 st.warning("目前沒有符合條件的標的。可先把「200MA策略」設為「全部」，確認資料正常。")
             else:
-                # 法人與週大戶資料只做「旁邊標記」，不參與 200MA 篩選、技術分或排序。
                 codes = result["代號"].astype(str).tolist()
                 with st.spinner("正在補上外資/投信連買與神秘金字塔本週大戶變化..."):
                     try:
@@ -125,7 +135,6 @@ with tab1:
                         parts.append(f"自營商{int(r['自營商連買天數'])}日")
                     return "🔥 " + "＋".join(parts) if parts else "—"
                 result["法人標記"] = result.apply(_institution_label, axis=1)
-                # 沒有任何法人連買時不要顯示空的 🔥 外資。
                 result.loc[(result["外資連買天數"].fillna(0) <= 0) & (result["投信連買天數"].fillna(0) <= 0), "法人標記"] = "—"
                 result["大戶週籌碼"] = result["大股東週增減%"].apply(
                     lambda v: "—" if pd.isna(v) else f"{v:+.2f}%"
@@ -138,8 +147,9 @@ with tab1:
                 st.dataframe(result[display_cols], use_container_width=True, hide_index=True)
                 st.subheader("🏆 Top 20")
                 st.dataframe(result[display_cols].head(20), use_container_width=True, hide_index=True)
-                st.caption("200MA、法人、週大戶三者資料彼此獨立；法人與大戶只作旁邊標記，不參與 200MA 篩選或技術分。法人資料為最近可取得的每日盤後資料。")
+                st.caption("200MA、法人、週大戶三者資料彼此獨立；法人與大戶只作旁邊標記，不參與 200MA 篩選或技術分。")
 
+    _technical_live_panel()
 
 with tab2:
     st.info("這一頁專門看神秘金字塔每週籌碼：一次抓全部股票，再分成「增加最多 Top 20」與「減少最多 Top 20」。不與 200MA 即時篩選混在一起。")
