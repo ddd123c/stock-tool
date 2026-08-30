@@ -10,6 +10,12 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 st.set_page_config(page_title="台股 200MA 即時量化篩選", layout="wide")
 
+
+# 200MA 驗證：輸入基準股票後，可先確認「未還原、200交易日」計算。
+st.sidebar.markdown("---")
+st.sidebar.subheader("🧪 200MA 基準驗證")
+st.sidebar.caption("先用已知答案驗證計算，再進行全台股掃描。")
+
 st.title("🚀 200MA 即時量化篩選")
 st.caption("歷史日線計算 200MA + 台灣交易所即時價格；手動掃描，不自動重抓。")
 
