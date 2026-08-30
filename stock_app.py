@@ -4,286 +4,340 @@ import pandas as pd
 import requests
 import urllib3
 from io import StringIO
-from datetime import datetime, timedelta
+from quant_engine import calculate_200ma_signal
 
-# --- 忽略 SSL 警告 ---
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- 網頁設定 ---
-st.set_page_config(page_title="專業操盤手選股 (數值修正版)", layout="wide")
-st.title("選股")
-st.markdown("""
-**修正說明：** 已強制設定 `auto_adjust=False`，確保抓取 **原始股價** (非還原權值)，
-讓 200MA 與技術指標數值與您的原始程式碼完全一致。
-""")
+st.set_page_config(page_title="台股 200MA 即時量化篩選", layout="wide")
 
-# --- 側邊欄設定 ---
-st.sidebar.header("⚙️ 掃描參數")
+st.title("🚀 200MA 即時量化篩選")
+st.caption("歷史日線計算 200MA + 台灣交易所即時價格；手動掃描，不自動重抓。")
 
-# 1. 股票來源
-st.sidebar.subheader("1. 股票池")
+st.sidebar.header("⚙️ 200MA 掃描設定")
+
 source_option = st.sidebar.radio(
-    "掃描範圍：",
-    ("全台股 (上市+上櫃)", "手動輸入代號")
+    "股票池",
+    ("全台股", "手動輸入")
 )
 
-# 2. 條件設定
-st.sidebar.subheader("2. 篩選條件")
-min_vol_limit = st.sidebar.number_input("最小5日均量 (張)", value=4000, step=500)
+min_vol_limit = st.sidebar.number_input(
+    "5日均量下限（張）",
+    min_value=0,
+    value=1000,
+    step=500
+)
 
-# --- 核心函數 ---
+st.sidebar.markdown("---")
+st.sidebar.info(
+    "規則：\n"
+    "1. 現價必須站在 200MA 上方。\n"
+    "2. 最近 5 個交易日內突破 200MA 的股票保留。\n"
+    "3. 跌破 200MA 立即排除。\n"
+    "4. 不自動每 5 分鐘掃描，避免平台資源被吃光。"
+)
 
-@st.cache_data
+
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_all_tickers():
-    """
-    抓取台股代號 (上市+上櫃)
-    """
-    stock_dict = {} 
-    
-    # 1. 上市
-    try:
-        url_tw = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
-        res = requests.get(url_tw, verify=False)
-        df = pd.read_html(StringIO(res.text))[0]
-        df.columns = df.iloc[0]
-        df = df.iloc[1:]
-        for item in df[df.columns[0]]:
-            item = str(item).strip()
-            code = item.split()[0]
-            if code.isdigit() and len(code) == 4:
-                stock_dict[f"{code}.TW"] = item
-    except: pass
+    """取得上市/上櫃股票代號與交易所別。"""
+    stock_dict = {}
 
-    # 2. 上櫃
-    try:
-        url_two = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4"
-        res = requests.get(url_two, verify=False)
-        df = pd.read_html(StringIO(res.text))[0]
-        df.columns = df.iloc[0]
-        df = df.iloc[1:]
-        for item in df[df.columns[0]]:
-            item = str(item).strip()
-            code = item.split()[0]
-            if code.isdigit() and len(code) == 4:
-                stock_dict[f"{code}.TWO"] = item
-    except: pass
-        
+    urls = [
+        ("TW", "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", "tse"),
+        ("TWO", "https://isin.twse.com.tw/isin/C_public.jsp?strMode=4", "otc"),
+    ]
+
+    for _, url, exchange in urls:
+        try:
+            res = requests.get(url, timeout=15, verify=False)
+            res.raise_for_status()
+            df = pd.read_html(StringIO(res.text))[0]
+            df.columns = df.iloc[0]
+            df = df.iloc[1:]
+
+            for item in df[df.columns[0]].dropna():
+                item = str(item).strip()
+                parts = item.split()
+                if not parts:
+                    continue
+                code = parts[0]
+                if code.isdigit() and len(code) == 4:
+                    name = " ".join(parts[1:]) if len(parts) > 1 else code
+                    stock_dict[code] = {
+                        "name": name,
+                        "exchange": exchange,
+                        "ticker": f"{code}.{ 'TW' if exchange == 'tse' else 'TWO'}",
+                    }
+        except Exception:
+            continue
+
     return stock_dict
 
-def calculate_indicators_single(df):
-    """計算單一股票的技術指標"""
-    # 確保資料長度足夠計算 200MA
-    if len(df) < 205: return None
-    
-    # 填補空值
-    df = df.ffill()
 
-    # 這裡抓取 'Close' (因為設定了 auto_adjust=False，這就是原始收盤價)
-    close = df['Close']
-    volume = df['Volume']
-    
-    # 均線計算
-    ma5 = close.rolling(5).mean()
-    ma10 = close.rolling(10).mean()
-    ma15 = close.rolling(15).mean()
-    ma20 = close.rolling(20).mean()
-    ma60 = close.rolling(60).mean()
-    ma200 = close.rolling(200).mean()
-    
-    # 均量
-    vol_ma5 = volume.rolling(5).mean()
-    
-    # 布林通道
-    std20 = close.rolling(20).std()
-    bb_upper = ma20 + (2 * std20)
-    bb_lower = ma20 - (2 * std20)
-    
-    # 取得最新一筆數據 (iloc[-1])
-    c_close = close.iloc[-1]
-    c_ma5 = ma5.iloc[-1]
-    c_ma15 = ma15.iloc[-1]
-    c_ma20 = ma20.iloc[-1]
-    c_ma60 = ma60.iloc[-1]
-    c_ma200 = ma200.iloc[-1]
-    c_vol = volume.iloc[-1]
-    c_vol_ma5 = vol_ma5.iloc[-1]
-    
-    # 取得布林寬度 (前5天平均)
-    c_bb_width = (bb_upper.iloc[-5:-1].mean() - bb_lower.iloc[-5:-1].mean()) / ma20.iloc[-5:-1].mean()
-    c_bb_upper = bb_upper.iloc[-1]
-    
-    # 量能過濾 (單位：股 -> 轉張數判斷)
-    if pd.isna(c_vol) or (c_vol < min_vol_limit * 1000): 
+@st.cache_data(ttl=21600, show_spinner=False)
+def download_history_chunk(tickers):
+    """Yahoo 歷史日線：每個 chunk 快取 6 小時，避免每次按掃描都重抓。"""
+    tickers = list(tickers)
+    if not tickers:
+        return pd.DataFrame()
+
+    try:
+        return yf.download(
+            tickers,
+            period="1y",
+            interval="1d",
+            auto_adjust=False,
+            group_by="ticker",
+            progress=False,
+            threads=True,
+            timeout=20,
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+def get_close_frame(data, ticker):
+    """兼容單檔與多檔 yfinance 回傳格式。"""
+    if data is None or data.empty:
         return None
 
-    results = {}
-    bias_20 = (c_close - c_ma20) / c_ma20 * 100
-    
-    # --- 策略 1: 假跌破翻揚 (5日內) ---
-    found_s1 = False
-    days_tag = ""
-    # 只有當目前價格 > 200MA 時才檢查過去是否跌破
-    if c_close > c_ma200:
-        for i in range(5):
-            idx = -1 - i
-            prev_idx = -2 - i
-            # 檢查：當天收盤 > 200MA 且 前一天收盤 < 200MA
-            if close.iloc[idx] > ma200.iloc[idx] and close.iloc[prev_idx] < ma200.iloc[prev_idx]:
-                found_s1 = True
-                days_tag = "🔥 今天入選" if i == 0 else f"📅 {i} 天前入選"
-                break
-    if found_s1: results['strat_1'] = days_tag
-    
-    # --- 策略 2: 強勢回調 ---
-    cond2_trend = (c_ma15 > c_ma60) and (c_ma60 > c_ma200)
-    dist_15 = abs(c_close - c_ma15) / c_ma15
-    cond2_pullback = (dist_15 < 0.03) and (c_close > c_ma60)
-    if cond2_trend and cond2_pullback: results['strat_2'] = True
-    
-    # --- 策略 3: 布林突破 ---
-    if (c_bb_width < 0.15) and (c_close > c_bb_upper) and (c_vol > c_vol_ma5 * 1.2):
-        results['strat_3'] = True
-        
-    # --- 策略 4: 糾結突破 ---
-    ma_list = [c_ma5, ma10.iloc[-1], c_ma20]
-    is_entangled = (max(ma_list) - min(ma_list)) / min(ma_list) < 0.05
-    prev_close = close.iloc[-2]
-    pct_change = (c_close - prev_close) / prev_close * 100
-    is_breakout = (c_close > max(ma_list)) and (pct_change > 4)
-    if is_entangled and is_breakout: 
-        results['strat_4'] = pct_change
+    try:
+        if isinstance(data.columns, pd.MultiIndex):
+            if ticker not in data.columns.get_level_values(0):
+                return None
+            df = data[ticker].copy()
+        else:
+            df = data.copy()
 
-    if not results: return None
-    
-    return {
-        "收盤": c_close,
-        "200MA": c_ma200,
-        "均量": int(c_vol/1000), 
-        "20MA乖離": bias_20,
-        "策略": results
-    }
+        if "Close" not in df.columns:
+            return None
 
-# --- 主程式 ---
+        return df[["Close", "Volume"]].dropna(how="all")
+    except Exception:
+        return None
 
-if st.button("🚀 啟動掃描"):
-    
-    status_text = st.empty()
-    progress_bar = st.progress(0)
-    
-    # 1. 獲取清單
-    with st.spinner("獲取清單中..."):
-        all_stocks = get_all_tickers()
-    
-    if not all_stocks:
-        st.error("清單獲取失敗")
-        st.stop()
-        
-    target_tickers = []
-    if source_option == "手動輸入代號":
-        input_list = [x.strip() for x in st.sidebar.text_area("輸入代號", "2330,2603").split(',')]
-        for code in input_list:
-            if f"{code}.TW" in all_stocks: target_tickers.append(f"{code}.TW")
-            elif f"{code}.TWO" in all_stocks: target_tickers.append(f"{code}.TWO")
-            else: target_tickers.append(f"{code}.TW") 
-    else:
-        target_tickers = list(all_stocks.keys())
-    
-    st.info(f"掃描標的: {len(target_tickers)} 檔")
-    
-    res_s1, res_s2, res_s3, res_s4 = [], [], [], []
-    stock_cache = {} 
-    
-    # 設定 Batch 大小
-    CHUNK_SIZE = 50
-    chunks = [target_tickers[i:i + CHUNK_SIZE] for i in range(0, len(target_tickers), CHUNK_SIZE)]
-    total_chunks = len(chunks)
-    
-    for i, chunk in enumerate(chunks):
-        status_text.text(f"掃描中... {i+1}/{total_chunks}")
-        progress_bar.progress((i+1)/total_chunks)
-        
+
+def get_realtime_prices(stock_items):
+    """
+    使用 TWSE MIS 即時行情。
+    上市/上櫃可以批次查詢，不再為每檔股票呼叫 Yahoo 即時報價。
+    """
+    prices = {}
+    items = list(stock_items)
+    chunk_size = 80
+
+    for start in range(0, len(items), chunk_size):
+        chunk = items[start:start + chunk_size]
+        ex_ch = "|".join(
+            f"{item['exchange']}_{code}.tw" for code, item in chunk
+        )
+
+        url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
+
         try:
-            # [關鍵修正] 加入 auto_adjust=False 確保使用原始股價，與您的原始代碼一致
-            data = yf.download(
-                chunk, 
-                period="2y",     # 抓2年確保 200MA 足夠
-                group_by='ticker', 
-                auto_adjust=False, # <--- 這是關鍵，不還原權值
-                progress=False, 
-                threads=True
+            res = requests.get(
+                url,
+                params={"ex_ch": ex_ch, "json": "1", "delay": "0"},
+                timeout=15,
+                headers={"User-Agent": "Mozilla/5.0"},
             )
-            
-            for ticker in chunk:
+            res.raise_for_status()
+            payload = res.json()
+
+            for row in payload.get("msgArray", []):
+                code = str(row.get("c", "")).strip()
+                z = str(row.get("z", "")).strip()
+                y = str(row.get("y", "")).strip()
+
+                # 盤中 z 是最新成交價；無成交時退回昨收。
+                price_text = z if z not in ("", "-", "0") else y
+
                 try:
-                    if len(chunk) == 1: df = data
-                    else: df = data[ticker]
-                    
-                    if df.empty or df['Close'].isna().all(): continue
-                    
-                    analysis = calculate_indicators_single(df)
-                    
-                    if analysis:
-                        name = all_stocks.get(ticker, ticker)
-                        stock_cache[f"{ticker} {name}"] = df 
-                        
-                        base_info = {
-                            "股票": f"{name}",
-                            "代號": ticker,
-                            "收盤": float(f"{analysis['收盤']:.2f}"),
-                            "均量": analysis['均量']
-                        }
-                        
-                        bias_val = analysis['20MA乖離']
-                        if 3 <= bias_val <= 8: bias_str = f"✅ {bias_val:.1f}%"
-                        elif bias_val > 10: bias_str = f"⚠️ {bias_val:.1f}%"
-                        elif bias_val < 0: bias_str = f"🥶 {bias_val:.1f}%"
-                        else: bias_str = f"{bias_val:.1f}%"
+                    prices[code] = float(price_text)
+                except (TypeError, ValueError):
+                    continue
 
-                        strat = analysis['策略']
-                        
-                        if 'strat_1' in strat:
-                            row = base_info.copy()
-                            row["200MA"] = float(f"{analysis['200MA']:.2f}")
-                            row["入選狀態"] = strat['strat_1']
-                            res_s1.append(row)
-                            
-                        if 'strat_2' in strat:
-                            row = base_info.copy()
-                            row["20MA乖離"] = bias_str
-                            res_s2.append(row)
-                            
-                        if 'strat_3' in strat:
-                            row = base_info.copy()
-                            row["20MA乖離"] = bias_str
-                            res_s3.append(row)
-                            
-                        if 'strat_4' in strat:
-                            row = base_info.copy()
-                            row["漲幅%"] = f"🔥 {strat['strat_4']:.2f}%"
-                            row["20MA乖離"] = bias_str
-                            res_s4.append(row)
+        except Exception:
+            continue
 
-                except: continue
-        except: continue
+    return prices
 
-    progress_bar.empty()
-    status_text.text("✅ 掃描完成！")
-    
-    t1, t2, t3, t4 = st.tabs(["🛡️ 假跌破 (200MA)", "📈 強勢回調", "💥 布林突破", "🚀 糾結突破"])
-    
-    def show_table(data_list):
-        if data_list: st.dataframe(pd.DataFrame(data_list))
-        else: st.warning("無符合")
 
-    with t1: show_table(res_s1)
-    with t2: show_table(res_s2)
-    with t3: show_table(res_s3)
-    with t4: show_table(res_s4)
+def scan_200ma(stock_dict, target_codes, min_vol):
+    results = []
+    cache_plot = {}
 
-    st.markdown("---")
-    if stock_cache:
-        selected = st.selectbox("個股走勢圖", list(stock_cache.keys()))
-        if selected:
-            df_plot = stock_cache[selected]
-            st.line_chart(df_plot['Close'])
+    chunk_size = 80
+    chunks = [
+        target_codes[i:i + chunk_size]
+        for i in range(0, len(target_codes), chunk_size)
+    ]
 
+    status = st.empty()
+    progress = st.progress(0.0)
+
+    status.markdown("🟢 **正在取得台灣交易所即時價格...**")
+
+    realtime_items = [(code, stock_dict[code]) for code in target_codes]
+    realtime_prices = get_realtime_prices(realtime_items)
+
+    if not realtime_prices:
+        status.error("即時價格取得失敗，請稍後再按一次「立即掃描」。")
+        progress.empty()
+        return [], {}
+
+    for chunk_no, codes in enumerate(chunks, start=1):
+        status.markdown(
+            f"🟢 **正在計算 200MA：第 {chunk_no}/{len(chunks)} 批 "
+            f"（{len(codes)} 檔）...**"
+        )
+
+        yf_tickers = tuple(stock_dict[c]["ticker"] for c in codes)
+        data = download_history_chunk(yf_tickers)
+
+        for code in codes:
+            info = stock_dict[code]
+            ticker = info["ticker"]
+            price = realtime_prices.get(code)
+
+            if price is None:
+                continue
+
+            df = get_close_frame(data, ticker)
+
+            if df is None or len(df) < 205:
+                continue
+
+            volume = pd.to_numeric(df["Volume"], errors="coerce").dropna()
+
+            if len(volume) < 5:
+                continue
+
+            vol5 = float(volume.tail(5).mean())
+
+            if vol5 < min_vol * 1000:
+                continue
+
+            signal = calculate_200ma_signal(df, price)
+
+            # signal=None 包含「跌破 200MA 就排除」。
+            if signal is None:
+                continue
+
+            results.append({
+                "代號": code,
+                "股票": info["name"],
+                "現價": round(signal["現價"], 2),
+                "200MA": round(signal["200MA"], 2),
+                "距200MA": f'{signal["距200MA"]:.2f}%',
+                "狀態": signal["突破狀態"],
+                "5日均量(張)": int(vol5 / 1000),
+            })
+
+            cache_plot[f"{code} {info['name']}"] = df
+
+        progress.progress(chunk_no / max(len(chunks), 1))
+
+    progress.empty()
+    status.markdown("🟢 **200MA 掃描完成！**")
+
+    return results, cache_plot
+
+
+st.markdown(
+    """
+    <div style="
+        padding:16px 20px;
+        border-radius:12px;
+        background:#18263a;
+        margin-bottom:16px;">
+        <b>篩選邏輯</b><br>
+        現價 > 200MA 才能上榜；最近 5 個交易日內突破者保留；
+        一旦跌破 200MA 就排除。
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+if source_option == "手動輸入":
+    manual_text = st.sidebar.text_area(
+        "股票代號",
+        "1609,2330,2603,3017,3605,6446",
+    )
+    target_codes = [
+        x.strip()
+        for x in manual_text.replace("，", ",").split(",")
+        if x.strip()
+    ]
+else:
+    target_codes = None
+
+
+if st.button("🔄 立即掃描", type="primary"):
+    with st.spinner("準備股票清單..."):
+        all_stocks = get_all_tickers()
+
+    if not all_stocks:
+        st.error("股票清單取得失敗，請稍後再試。")
+        st.stop()
+
+    if target_codes is None:
+        target_codes = list(all_stocks.keys())
+    else:
+        target_codes = [code for code in target_codes if code in all_stocks]
+
+    if not target_codes:
+        st.warning("沒有找到有效的台股代號。")
+        st.stop()
+
+    st.info(
+        f"本次掃描 {len(target_codes)} 檔。"
+        "歷史資料會快取，下一次掃描不必重新抓一年資料。"
+    )
+
+    results, stock_cache = scan_200ma(
+        all_stocks,
+        target_codes,
+        min_vol_limit,
+    )
+
+    if results:
+        df_result = pd.DataFrame(results)
+
+        # 突破優先，再依距離 200MA 由高到低。
+        df_result["_priority"] = (
+            df_result["狀態"].str.contains("突破").astype(int)
+        )
+        df_result = (
+            df_result
+            .sort_values(
+                ["_priority", "距200MA"],
+                ascending=[False, False]
+            )
+            .drop(columns="_priority")
+            .reset_index(drop=True)
+        )
+
+        st.success(f"找到 {len(df_result)} 檔站上 200MA 的股票")
+
+        st.dataframe(
+            df_result,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        if stock_cache:
+            selected = st.selectbox(
+                "📈 個股歷史走勢",
+                list(stock_cache.keys()),
+            )
+
+            if selected:
+                plot_df = stock_cache[selected].copy()
+                plot_df["MA200"] = plot_df["Close"].rolling(200).mean()
+                st.line_chart(plot_df[["Close", "MA200"]].tail(250))
+    else:
+        st.warning(
+            "目前沒有符合條件的股票。"
+            "注意：跌破 200MA 的股票不會上榜。"
+        )
