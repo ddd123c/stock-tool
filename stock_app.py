@@ -80,7 +80,7 @@ if universe == "手動輸入":
     stocks = stocks[stocks["code"].isin(wanted)].copy()
 stocks["ticker"] = stocks["code"].map(lambda x: f"{x}.TW")
 
-tab1, tab2 = st.tabs(["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東"])
+tab1, tab2, tab3 = st.tabs(["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東", "🏦 法人連續買超"])
 
 with tab1:
     st.info("這一頁專注技術面：只保留站上 200MA 不超過 5 個交易日的標的，適合盤中/盤後快速查看。這裡不混入每週大股東資料。")
@@ -97,6 +97,7 @@ with tab1:
                         inst = get_institution_streaks(codes)
                         result = result.merge(inst, on="代號", how="left")
                     except Exception:
+                        result["法人連買天數"] = 0
                         result["外資連買天數"] = 0
                         result["投信連買天數"] = 0
                         result["自營商連買天數"] = 0
@@ -158,3 +159,22 @@ with tab2:
             st.error(f"抓取失敗：{e}")
 
 st.caption("台股代號來源：tw_stocks.csv｜技術資料：Yahoo Finance｜法人資料：TWSE / TPEx｜週籌碼：神秘金字塔")
+
+
+with tab3:
+    st.info("這一頁專門看法人合計連續買超：外資＋投信＋自營商每日買賣超合計。連續買超超過 2 個交易日（≥3 日）就上榜；只要轉為法人合計賣超即重新計算。")
+    if st.button("🏦 更新法人連續買超排行", type="primary"):
+        try:
+            with st.spinner("正在抓取全台股最近法人買賣超資料..."):
+                codes = stocks["code"].astype(str).tolist()
+                inst = get_institution_streaks(codes, lookback_days=45)
+                show = stocks[["code", "name"]].copy().rename(columns={"code":"代號","name":"股票"})
+                show = show.merge(inst, on="代號", how="left")
+                show["法人連買天數"] = show["法人連買天數"].fillna(0).astype(int)
+                show = show[show["法人連買天數"] >= 3].sort_values(["法人連買天數","外資連買天數","投信連買天數"], ascending=False)
+                st.success(f"目前有 {len(show)} 檔股票符合「法人連續買超 ≥ 3 日」")
+                display_cols = ["代號","股票","法人連買天數","外資連買天數","投信連買天數","自營商連買天數","外資5日累計(張)","投信5日累計(張)","自營商5日累計(張)"]
+                st.dataframe(show[display_cols], use_container_width=True, hide_index=True)
+                st.caption("「法人連買天數」以外資＋投信＋自營商每日買賣超合計判定；連買期間只要出現非買超日即歸零重新計算。")
+        except Exception as e:
+            st.error(f"抓取失敗：{e}")
