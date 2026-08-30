@@ -108,11 +108,14 @@ with tab1:
                     except Exception:
                         result["大股東週增減%"] = pd.NA
 
-                result["法人標記"] = result.apply(
-                    lambda r: "🔥 外資" + (f"{int(r['外資連買天數'])}日" if pd.notna(r["外資連買天數"]) and r["外資連買天數"] > 0 else "")
-                    + ("＋投信" + (f"{int(r['投信連買天數'])}日" if pd.notna(r["投信連買天數"]) and r["投信連買天數"] > 0 else "") if pd.notna(r["投信連買天數"]) and r["投信連買天數"] > 0 else ""),
-                    axis=1
-                )
+                def _institution_label(r):
+                    parts = []
+                    if pd.notna(r["外資連買天數"]) and r["外資連買天數"] > 0:
+                        parts.append(f"外資{int(r['外資連買天數'])}日")
+                    if pd.notna(r["投信連買天數"]) and r["投信連買天數"] > 0:
+                        parts.append(f"投信{int(r['投信連買天數'])}日")
+                    return "🔥 " + "＋".join(parts) if parts else "—"
+                result["法人標記"] = result.apply(_institution_label, axis=1)
                 # 沒有任何法人連買時不要顯示空的 🔥 外資。
                 result.loc[(result["外資連買天數"].fillna(0) <= 0) & (result["投信連買天數"].fillna(0) <= 0), "法人標記"] = "—"
                 result["大戶週籌碼"] = result["大股東週增減%"].apply(
