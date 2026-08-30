@@ -114,7 +114,7 @@ def get_institution_streaks(codes, lookback_days=45):
         if len(frames) >= 25:
             break
     if not frames:
-        return pd.DataFrame({"代號": list(wanted), "外資連買天數": 0, "投信連買天數": 0, "自營商連買天數": 0,
+        return pd.DataFrame({"代號": list(wanted), "法人連買天數": 0, "外資連買天數": 0, "投信連買天數": 0, "自營商連買天數": 0,
                              "外資5日累計(張)": 0, "投信5日累計(張)": 0, "自營商5日累計(張)": 0})
     allx = pd.concat(frames, ignore_index=True)
     allx["日期"] = pd.to_datetime(allx["日期"])
@@ -126,9 +126,14 @@ def get_institution_streaks(codes, lookback_days=45):
         foreign = g["外資買賣超"].fillna(0).tolist()
         trust = g["投信買賣超"].fillna(0).tolist()
         dealer = g["自營商買賣超"].fillna(0).tolist()
+        total = [f + t + d for f, t, d in zip(foreign, trust, dealer)]
+        total_run = 0
         f_run = 0
         t_run = 0
         d_run = 0
+        for v in total:
+            if v > 0: total_run += 1
+            else: break
         for v in foreign:
             if v > 0: f_run += 1
             else: break
@@ -140,6 +145,7 @@ def get_institution_streaks(codes, lookback_days=45):
             else: break
         out.append({
             "代號": code,
+            "法人連買天數": total_run,
             "外資連買天數": f_run,
             "投信連買天數": t_run,
             "自營商連買天數": d_run,
