@@ -19,28 +19,40 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dic
             return None
         x[c] = _num(x[c])
 
-    # Yahoo Finance 的 Close 已反映股票分割後的歷史價格尺度。
-    # 這裡刻意使用 Close，不再依 actions 的 stock splits 二次除權，
-    # 否則像 0052 這類曾分割的標的會被重複調整，200MA 會明顯偏低。
-    # 同時不使用 Adj Close，因此不把股利再還原進技術均線。
+    # 永豐看盤「還原日」的均線是用還原權息後的價格計算。
+    # 因此 200MA 必須使用 Yahoo Finance 的 Adj Close，而不是原始 Close。
+    # 原始 Close 會在除息後產生價格跳空，造成 200MA 偏高；
+    # 例如 6177 達麗目前永豐還原日的 200T 約 44.50，
+    # 原始 Close 計算會得到約 47.x，這正是先前誤差的來源。
     x["close_raw"] = _num(x["close"])
-    x = x.dropna(subset=["close_raw"])
-    close = x["close_raw"]
+    if "adj close" in x.columns:
+        x["close_adjusted"] = _num(x["adj close"])
+    else:
+        x["close_adjusted"] = x["close_raw"]
+    x = x.dropna(subset=["close_adjusted"])
+    close = x["close_adjusted"]
     volume = x["volume"].fillna(0)
 
     if len(close) < 199:
         return None
 
     # 盤中：今天視為新的第 1 個交易日資料點。
-    # 因此即時 200MA = 前 199 個已完成交易日 Close + 今天最新成交價。
-    # 下一個開盤日開始，今天就自然成為歷史資料中的第 201 個點，
-    # 滾動視窗會自動扣掉最舊的一天。
-    # 不使用 Adj Close，也不再對 stock split 做第二次調整。
+    # 即時 200MA = 前 199 個已完成交易日「還原收盤價」 + 今天最新價格。
+    # 下一個開盤日開始，昨天會自然成為歷史資料中的第 200 個點，
+    # 新的一天成為第 201 個點，滾動視窗自動扣掉最舊交易日。
     use_live = live_price is not None
     historical_close = close
-    if use_live and len(close) >= 1:
-        # Yahoo daily history may or may not already contain today's partial
-        # row. Only remove it when its date is actually today in Taiwan.
+
+    # 取得「今天最新價格」對應的還原倍率。
+    # 台股除息後目前價格通常倍率為 1；若資料源在今日仍提供 Adj Close，
+    # 則直接使用今日 Adj Close / Close 作為盤中換算倍率。
+    live_adjust_factor = 1.0
+    if use_live and len(x) >= 1:
+        last_raw = float(x["close_raw"].iloc[-1]) if pd.notna(x["close_raw"].iloc[-1]) else np.nan
+        last_adj = float(x["close_adjusted"].iloc[-1]) if pd.notna(x["close_adjusted"].iloc[-1]) else np.nan
+        if pd.notna(last_raw) and last_raw != 0 and pd.notna(last_adj):
+            live_adjust_factor = last_adj / last_raw
+
         last_ts = pd.Timestamp(x.index[-1])
         if last_ts.tzinfo is not None:
             last_date = last_ts.tz_convert("Asia/Taipei").date()
@@ -54,12 +66,10 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dic
         return None
 
     if use_live:
-        # Keep the full historical series so prior 200MA values remain
-        # available for 5-day breakout detection and 20-day slope.
-        # Today's live price replaces today's partial daily close (if present).
+        live_adjusted_price = float(live_price) * live_adjust_factor
         analysis_close = pd.concat(
             [historical_close.reset_index(drop=True),
-             pd.Series([float(live_price)])],
+             pd.Series([live_adjusted_price])],
             ignore_index=True
         )
     else:
