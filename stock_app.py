@@ -229,6 +229,8 @@ def scan_200ma(stock_dict, target_codes, min_vol):
                 "股票": info["name"],
                 "現價": round(signal["現價"], 2),
                 "200MA": round(signal["200MA"], 2),
+                "扣抵值": round(signal["扣抵值"], 2),
+                "MA方向": signal["MA方向"],
                 "距200MA": f'{signal["距200MA"]:.2f}%',
                 "狀態": signal["突破狀態"],
                 "5日均量(張)": int(vol5 / 1000),
