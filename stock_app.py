@@ -6,9 +6,9 @@ from chip_data import fetch_all_weekly_chip_rankings
 from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V3.4", layout="wide")
-st.title("📊 台股 Quant Screener V3.4")
-st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 新聞報告")
+st.set_page_config(page_title="台股 Quant Screener V3.5", layout="wide")
+st.title("📊 台股 Quant Screener V3.5")
+st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法人連續買超 ＋ 新聞報告")
 
 with st.sidebar:
     st.header("⚙️ 200MA 掃描設定")
