@@ -3,7 +3,7 @@ from typing import Optional
 
 
 def _completed_close(df: pd.DataFrame) -> pd.Series:
-    """只保留已完成的交易日收盤價；不做還原、不使用 Adj Close。"""
+    """Return raw (unadjusted) completed trading-day closes only."""
     if df is None or df.empty or "Close" not in df.columns:
         return pd.Series(dtype="float64")
 
@@ -11,18 +11,18 @@ def _completed_close(df: pd.DataFrame) -> pd.Series:
     if close.empty:
         return close
 
-    # yfinance 盤中可能會先放入今天的未完成日線。
-    # 今日價格由交易所即時價提供，因此今天這筆不能再當成歷史收盤。
     try:
         idx = pd.DatetimeIndex(close.index)
+        taipei_today = pd.Timestamp.now(tz="Asia/Taipei").date()
+
         if idx.tz is not None:
-            today = pd.Timestamp.now(tz="Asia/Taipei").date()
             last_date = idx[-1].tz_convert("Asia/Taipei").date()
         else:
-            today = pd.Timestamp.now(tz="Asia/Taipei").date()
             last_date = idx[-1].date()
 
-        if last_date == today:
+        # Today's Yahoo daily bar is incomplete during the session.
+        # It must NOT enter the completed-history MA window.
+        if last_date == taipei_today:
             close = close.iloc[:-1]
     except Exception:
         pass
@@ -31,27 +31,22 @@ def _completed_close(df: pd.DataFrame) -> pd.Series:
 
 
 def calculate_200ma_signal(df: pd.DataFrame, realtime_price: Optional[float]):
-    """計算「未還原、200 個交易日」的台股 200MA。
+    """Calculate live, unadjusted 200-trading-day SMA.
 
-    盤中定義：
-      今天 = 第 1 個交易日
-      200MA = 前 199 個已完成交易日收盤 + 今天最新成交價，共 200 個值
+    During today's session:
+      199 completed trading-day closes + today's latest price = 200 observations.
 
-    因此下個交易日開始後：
-      昨天會成為第 1 個完整交易日，
-      今天的收盤價也正式進入歷史資料，
-      窗口仍維持 200 個交易日。
+    Therefore:
+      - today's live price is observation #200;
+      - on the next trading day, today's final close becomes history;
+      - the oldest observation drops out, keeping the window at 200 trading days.
 
-    扣抵值：
-      今天的 200MA 使用「前 199 日 + 今日」；
-      到明天時，會被移除的是這 199 日中的最舊那一天。
+    A stock is NEVER returned when the live price is <= live 200MA.
     """
     if df is None or df.empty or realtime_price is None:
         return None
 
     completed = _completed_close(df)
-
-    # 至少需要 199 個完整交易日 + 今天即時價。
     if len(completed) < 199:
         return None
 
@@ -59,40 +54,32 @@ def calculate_200ma_signal(df: pd.DataFrame, realtime_price: Optional[float]):
     if current_price <= 0:
         return None
 
-    # 今天是第 1 天：199 個已完成交易日 + 今日最新價 = 200 個值。
-    last_199 = completed.tail(199)
-    live_ma200 = float((last_199.sum() + current_price) / 200.0)
+    window = completed.tail(199)
+    live_ma200 = float((window.sum() + current_price) / 200.0)
 
-    # 最近一個完整交易日的正式 200MA。
-    if len(completed) >= 200:
-        official_ma200 = float(completed.tail(200).mean())
-    else:
-        official_ma200 = float("nan")
+    official_ma200 = (
+        float(completed.tail(200).mean())
+        if len(completed) >= 200 else float("nan")
+    )
 
-    # 明天更新時會被移除的是今天窗口中最舊的那一天。
-    cutoff_close = float(last_199.iloc[0])
+    cutoff_close = float(window.iloc[0])
 
-    # 最近 5 個「已完成交易日」內曾由下往上突破。
+    # Find an upward cross within the last 5 completed trading sessions.
     cross_day = None
-    if len(completed) >= 200:
-        ma200_series = completed.rolling(window=200, min_periods=200).mean()
-        start = max(200, len(completed) - 5)
+    if len(completed) >= 201:
+        ma200 = completed.rolling(200, min_periods=200).mean()
+        first_i = max(200, len(completed) - 5)
 
-        for i in range(len(completed) - 1, start - 1, -1):
-            prev_ma = ma200_series.iloc[i - 1]
-            cur_ma = ma200_series.iloc[i]
-
+        for i in range(len(completed) - 1, first_i - 1, -1):
+            prev_ma = ma200.iloc[i - 1]
+            cur_ma = ma200.iloc[i]
             if pd.isna(prev_ma) or pd.isna(cur_ma):
                 continue
 
-            if (
-                completed.iloc[i] > cur_ma
-                and completed.iloc[i - 1] <= prev_ma
-            ):
+            if completed.iloc[i] > cur_ma and completed.iloc[i - 1] <= prev_ma:
                 cross_day = len(completed) - 1 - i
                 break
 
-    # 今日盤中突破：昨日收盤在正式 200MA 下方/等於，今天最新價站上即時 200MA。
     live_cross = False
     if not pd.isna(official_ma200):
         yesterday_close = float(completed.iloc[-1])
@@ -101,7 +88,6 @@ def calculate_200ma_signal(df: pd.DataFrame, realtime_price: Optional[float]):
             and yesterday_close <= official_ma200
         )
 
-    # 硬條件：現價跌破或等於盤中 200MA，絕不上榜。
     if current_price <= live_ma200:
         return None
 
@@ -115,7 +101,6 @@ def calculate_200ma_signal(df: pd.DataFrame, realtime_price: Optional[float]):
         status = "🟢 站上 200MA"
         days = None
 
-    # 扣抵方向：用今天會被換掉的最舊值比較。
     if current_price > cutoff_close:
         ma_direction = "⬆️ 向上"
     elif current_price < cutoff_close:
