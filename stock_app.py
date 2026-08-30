@@ -52,11 +52,11 @@ def scan_technical(stocks, min_vol, strategy_filter):
             x = compute_indicators(df)
             if not x or x["vol5"] < min_vol * 1000:
                 continue
+            # 200MA 入選：最近 5 個交易日內曾由下往上突破 200MA。
+            # 今天、第 1～5 個交易日內突破都保留；第 6 天起才排除。
+            if not x.get("recent_200_breakout", False):
+                continue
             flags = strategy_flags(x)
-            if not flags:
-                continue
-            if x["above200_run"] > 5:
-                continue
             if strategy_filter == "只看今日突破" and not x["crossed_up_200"]:
                 continue
             if strategy_filter == "只看近5日突破" and not x["recent_200_breakout"]:
