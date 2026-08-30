@@ -6,8 +6,8 @@ from chip_data import fetch_all_weekly_chip_rankings
 from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V3.5", layout="wide")
-st.title("📊 台股 Quant Screener V3.5")
+st.set_page_config(page_title="台股 Quant Screener V3.6", layout="wide")
+st.title("📊 台股 Quant Screener V3.6")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法人連續買超 ＋ 新聞報告")
 
 with st.sidebar:
@@ -173,8 +173,10 @@ elif section == "🏛️ 法人連續買超":
                 merged["代號"] = merged["code"].astype(str)
                 merged = merged.merge(inst, on="代號", how="left")
                 merged = merged.drop(columns=["code"]).rename(columns={"name":"股票"})
+                # 只顯示法人買超；法人連買天數 <= 0 的賣超/非買超股票不列入。
+                merged = merged[merged["法人連買天數"].fillna(0) > 0].copy()
                 merged = merged.sort_values(["法人連買天數","外資5日累計(張)"], ascending=[False,False])
-                st.success(f"共取得 {len(merged)} 檔法人資料")
+                st.success(f"共取得 {len(merged)} 檔法人連續買超")
                 display_cols = ["代號","股票","法人連買天數","外資連買天數","投信連買天數","自營商連買天數","外資5日累計(張)","投信5日累計(張)","自營商5日累計(張)"]
                 st.dataframe(merged[display_cols], use_container_width=True, hide_index=True)
         except Exception as e:
