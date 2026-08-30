@@ -4,10 +4,11 @@ import yfinance as yf
 import pandas as pd
 import plotly.express as px
 from chip_data import fetch_stock_weekly, chip_features, fetch_all_weekly_chip_rankings
+from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V2.5", layout="wide")
-st.title("📊 台股 Quant Screener V2.4")
+st.set_page_config(page_title="台股 Quant Screener V2.6", layout="wide")
+st.title("📊 台股 Quant Screener V2.6")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東籌碼（兩個獨立功能）")
 
 with st.sidebar:
@@ -89,12 +90,43 @@ with tab1:
             if result.empty:
                 st.warning("目前沒有符合條件的標的。可先把「200MA策略」設為「全部」，確認資料正常。")
             else:
+                # 法人與週大戶資料只做「旁邊標記」，不參與 200MA 篩選、技術分或排序。
+                codes = result["代號"].astype(str).tolist()
+                with st.spinner("正在補上外資/投信連買與神秘金字塔本週大戶變化..."):
+                    try:
+                        inst = get_institution_streaks(codes)
+                        result = result.merge(inst, on="代號", how="left")
+                    except Exception:
+                        result["外資連買天數"] = 0
+                        result["投信連買天數"] = 0
+                        result["外資5日累計(張)"] = 0.0
+                        result["投信5日累計(張)"] = 0.0
+                    try:
+                        chip = fetch_all_weekly_chip_rankings()
+                        chip = chip[["代號", "大股東週增減%"]].drop_duplicates("代號")
+                        result = result.merge(chip, on="代號", how="left")
+                    except Exception:
+                        result["大股東週增減%"] = pd.NA
+
+                result["法人標記"] = result.apply(
+                    lambda r: "🔥 外資" + (f"{int(r['外資連買天數'])}日" if pd.notna(r["外資連買天數"]) and r["外資連買天數"] > 0 else "")
+                    + ("＋投信" + (f"{int(r['投信連買天數'])}日" if pd.notna(r["投信連買天數"]) and r["投信連買天數"] > 0 else "") if pd.notna(r["投信連買天數"]) and r["投信連買天數"] > 0 else ""),
+                    axis=1
+                )
+                # 沒有任何法人連買時不要顯示空的 🔥 外資。
+                result.loc[(result["外資連買天數"].fillna(0) <= 0) & (result["投信連買天數"].fillna(0) <= 0), "法人標記"] = "—"
+                result["大戶週籌碼"] = result["大股東週增減%"].apply(
+                    lambda v: "—" if pd.isna(v) else f"{v:+.2f}%"
+                )
                 result = result.sort_values(["技術分"], ascending=False)
                 st.success(f"找到 {len(result)} 檔符合 200MA 技術條件的標的")
-                st.dataframe(result, use_container_width=True, hide_index=True)
+                display_cols = ["代號","股票","技術分","200MA狀態","站上200MA天數",
+                                "法人標記","外資連買天數","投信連買天數","大戶週籌碼",
+                                "收盤","200MA","量比(5日/20日)","200MA斜率20D%","策略"]
+                st.dataframe(result[display_cols], use_container_width=True, hide_index=True)
                 st.subheader("🏆 Top 20")
-                st.dataframe(result.head(20), use_container_width=True, hide_index=True)
-                st.caption("技術資料：Yahoo Finance。此頁不等待神秘金字塔週資料，因此兩個功能彼此獨立。")
+                st.dataframe(result[display_cols].head(20), use_container_width=True, hide_index=True)
+                st.caption("200MA、法人、週大戶三者資料彼此獨立；法人與大戶只作旁邊標記，不參與 200MA 篩選或技術分。法人資料為最近可取得的每日盤後資料。")
 
 
 with tab2:
@@ -118,4 +150,4 @@ with tab2:
         except Exception as e:
             st.error(f"抓取失敗：{e}")
 
-st.caption("台股代號來源：tw_stocks.csv｜技術資料：Yahoo Finance｜週籌碼：神秘金字塔")
+st.caption("台股代號來源：tw_stocks.csv｜技術資料：Yahoo Finance｜法人資料：TWSE / TPEx｜週籌碼：神秘金字塔")
