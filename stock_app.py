@@ -3,6 +3,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 from chip_data import fetch_all_weekly_chip_rankings
+from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
 st.set_page_config(page_title="台股 Quant Screener V3.4", layout="wide")
