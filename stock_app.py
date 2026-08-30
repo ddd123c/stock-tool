@@ -80,9 +80,9 @@ def get_all_tickers():
     return stock_dict
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=21600, show_spinner=False)
 def download_history_chunk(tickers):
-    """Yahoo 歷史日線：每個 chunk 快取 24 小時；盤中價格另從交易所即時取得。"""
+    """Yahoo 歷史日線：每個 chunk 快取 6 小時；盤中價格另從交易所即時取得。"""
     tickers = list(tickers)
     if not tickers:
         return pd.DataFrame()
@@ -211,7 +211,7 @@ def scan_200ma(stock_dict, target_codes, min_vol):
 
             df = get_close_frame(data, ticker)
 
-            if df is None or len(df) < 205:
+            if df is None or len(df) < 199:
                 continue
 
             volume = pd.to_numeric(df["Volume"], errors="coerce").dropna()
