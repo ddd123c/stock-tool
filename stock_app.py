@@ -8,14 +8,14 @@ from quant_engine import calculate_200ma_signal
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(page_title="台股 200MA 即時量化篩選 V2.9", layout="wide")
+st.set_page_config(page_title="台股 200MA 即時量化篩選 V3.0", layout="wide")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🧪 200MA 基準驗證")
 st.sidebar.caption("先用已知答案驗證計算，再進行全台股掃描。")
 
-st.title("🚀 台股 Quant Screener V2.9")
-st.caption("200MA 專用掃描：歷史日線 + 台灣交易所即時價格；法人／大股東資料完全不參與本頁掃描。")
+st.title("🚀 台股 Quant Screener V3.0")
+st.caption("200MA 專用掃描：歷史日線 + 台灣交易所即時價格。⚡ 本頁完全不抓法人／大股東資料，縮短掃描時間。")
 
 st.sidebar.header("⚙️ 200MA 掃描設定")
 
