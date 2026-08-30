@@ -104,6 +104,45 @@ def fetch_chip_html(url: str = "https://norway.twsthr.info/StockHoldersTopWeek.a
             return normalize_chip_columns(t)
     raise ValueError("找不到大股東週排行表")
 
+
+def fetch_all_weekly_chip_rankings() -> pd.DataFrame:
+    """抓神秘金字塔週排行全部股票，取最新一週 >400張大股東持有張數增減率。"""
+    url = "https://norway.twsthr.info/StockHoldersTopWeek.aspx"
+    r = requests.get(url, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    tables = pd.read_html(StringIO(r.text))
+    target = None
+    for t in tables:
+        t = _flatten_columns(t)
+        if len(t) < 20:
+            continue
+        cols = " ".join(map(str, t.columns))
+        if "股票代號" in cols and "大股東" in cols and "持有張數增減" in cols:
+            target = t
+            break
+    if target is None:
+        raise ValueError("找不到神秘金字塔週排行表")
+    date_cols = []
+    for c in target.columns:
+        m = re.search(r"(20\d{6})", str(c))
+        if m:
+            date_cols.append((m.group(1), c))
+    if not date_cols:
+        raise ValueError("找不到週籌碼日期欄位")
+    latest_date, latest_col = max(date_cols, key=lambda x: x[0])
+    stock_col = target.columns[0]
+    out = pd.DataFrame({
+        "代號": target[stock_col].map(_stock_code),
+        "股票": target[stock_col].astype(str).str.replace(r"^\s*\d{4,6}", "", regex=True).str.strip(),
+        "大股東週增減%": pd.to_numeric(
+            target[latest_col].astype(str).str.replace(",", "", regex=False),
+            errors="coerce"
+        ),
+    })
+    out["資料週"] = pd.to_datetime(latest_date, format="%Y%m%d")
+    out = out.dropna(subset=["代號", "大股東週增減%"]).drop_duplicates("代號")
+    return out[["代號", "股票", "資料週", "大股東週增減%"]].reset_index(drop=True)
+
 def chip_features(weekly: pd.DataFrame) -> dict:
     """由單股週資料計算 1/4/8 週比例變化與趨勢。"""
     if weekly is None or weekly.empty:
