@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Technical indicators and scoring for the Quant Screener V2."""
+"""Technical indicators, 200MA breakout states and scoring for Quant Screener V2."""
 from __future__ import annotations
 import numpy as np
 import pandas as pd
@@ -13,55 +13,119 @@ def compute_indicators(df: pd.DataFrame) -> dict | None:
     if df is None or df.empty:
         return None
     x = df.copy()
-    # yfinance can return duplicate/odd column labels; normalize to OHLCV.
     x.columns = [str(c).strip().lower() for c in x.columns]
     for c in ("close", "volume"):
         if c not in x.columns:
             return None
         x[c] = _num(x[c])
-    close = x["close"].dropna()
+    x = x.dropna(subset=["close"])
+    close = x["close"]
+    volume = x["volume"].fillna(0)
     if len(close) < 200:
         return None
-    volume = _num(x["volume"]).fillna(0)
-    ma = {n: close.rolling(n).mean().iloc[-1] for n in MA_WINDOWS}
-    ma200_series = close.rolling(200).mean()
-    if pd.isna(ma[200]):
-        return None
-    slope_ref = ma200_series.iloc[-21]
-    slope20 = (ma[200] / slope_ref - 1.0) if pd.notna(slope_ref) and slope_ref else 0.0
-    ma20 = ma[20]
-    std20 = close.rolling(20).std().iloc[-1]
+
+    ma = {n: close.rolling(n).mean() for n in MA_WINDOWS}
+    m = {n: float(ma[n].iloc[-1]) for n in MA_WINDOWS}
+    ma200 = ma[200]
+    ma200_now = m[200]
+    ma200_5d = float(ma200.iloc[-6]) if len(ma200) >= 206 and pd.notna(ma200.iloc[-6]) else np.nan
+    ma200_20d = float(ma200.iloc[-21]) if len(ma200) >= 221 and pd.notna(ma200.iloc[-21]) else np.nan
+
+    slope20 = (ma200_now / ma200_20d - 1.0) if pd.notna(ma200_20d) and ma200_20d else 0.0
+    slope5 = (ma200_now / ma200_5d - 1.0) if pd.notna(ma200_5d) and ma200_5d else 0.0
+
+    c = float(close.iloc[-1])
+    prev_c = float(close.iloc[-2]) if len(close) >= 2 else np.nan
+    prev_ma200 = float(ma200.iloc[-2]) if len(ma200) >= 2 and pd.notna(ma200.iloc[-2]) else np.nan
+
+    # 200MA breakout classification.
+    crossed_up = pd.notna(prev_c) and pd.notna(prev_ma200) and prev_c <= prev_ma200 and c > ma200_now
+    crossed_down = pd.notna(prev_c) and pd.notna(prev_ma200) and prev_c >= prev_ma200 and c < ma200_now
+
+    above = close > ma200
+    # Consecutive days above/below, useful for distinguishing a fresh breakout from an established trend.
+    run = 0
+    current_above = bool(above.iloc[-1])
+    for v in reversed(above.tolist()):
+        if bool(v) == current_above:
+            run += 1
+        else:
+            break
+
+    vol5 = float(volume.tail(5).mean())
+    vol20 = float(volume.tail(20).mean())
+    volume_ratio = vol5 / vol20 if vol20 else 0.0
+
+    ma20 = m[20]
+    std20 = float(close.rolling(20).std().iloc[-1])
     upper = ma20 + 2 * std20
     lower = ma20 - 2 * std20
     width = (upper - lower) / ma20 if ma20 else np.nan
-    vol5 = volume.tail(5).mean()
-    vol20 = volume.tail(20).mean()
-    prev20high = close.iloc[-21:-1].max() if len(close) >= 21 else np.nan
+    prev20high = float(close.iloc[-21:-1].max()) if len(close) >= 21 else np.nan
+
+    # Recent 200MA breakout / retest:
+    # If price crossed above 200MA within the last 5 sessions, label it as a recent breakout.
+    recent_cross = False
+    cross_days_ago = None
+    max_lookback = min(5, len(close) - 1)
+    for i in range(1, max_lookback + 1):
+        if close.iloc[-i-1] <= ma200.iloc[-i-1] and close.iloc[-i] > ma200.iloc[-i]:
+            recent_cross = True
+            cross_days_ago = i - 1
+            break
+
+    # Retest-and-reclaim: recent close touched/went below 200MA, then current close reclaimed it.
+    recent_retest = False
+    if c > ma200_now and len(close) >= 6:
+        for i in range(1, min(6, len(close)-1)):
+            if close.iloc[-i] <= ma200.iloc[-i] * 1.01:
+                recent_retest = True
+                break
+
+    if crossed_up:
+        breakout_type = "今日突破200MA"
+    elif recent_cross:
+        breakout_type = f"近5日突破200MA（{cross_days_ago}日前）"
+    elif recent_retest and run >= 1:
+        breakout_type = "200MA回踩後站回"
+    elif current_above:
+        breakout_type = "站上200MA（非新突破）"
+    else:
+        breakout_type = "200MA下方"
+
     return {
-        "close": float(close.iloc[-1]), "ma5": float(ma[5]), "ma10": float(ma[10]),
-        "ma15": float(ma[15]), "ma20": float(ma[20]), "ma60": float(ma[60]),
-        "ma200": float(ma[200]), "ma200_slope20": float(slope20),
-        "bias20": float((close.iloc[-1] / ma20 - 1) * 100),
-        "vol5": float(vol5), "vol20": float(vol20),
-        "volume_ratio": float(vol5 / vol20) if vol20 else 0.0,
+        "close": c, "prev_close": prev_c,
+        "ma5": m[5], "ma10": m[10], "ma15": m[15], "ma20": m[20], "ma60": m[60], "ma200": ma200_now,
+        "ma200_slope5": float(slope5), "ma200_slope20": float(slope20),
+        "bias20": float((c / ma20 - 1) * 100),
+        "vol5": vol5, "vol20": vol20, "volume_ratio": float(volume_ratio),
         "bb_upper": float(upper), "bb_lower": float(lower),
         "bb_width": float(width) if pd.notna(width) else 0.0,
-        "prev20high": float(prev20high),
-        "above200": bool(close.iloc[-1] > ma[200]),
+        "prev20high": prev20high, "above200": current_above,
+        "above200_run": run, "crossed_up_200": bool(crossed_up), "crossed_down_200": bool(crossed_down),
+        "recent_200_breakout": bool(recent_cross), "cross_days_ago": cross_days_ago,
+        "recent_200_retest": bool(recent_retest), "breakout_type": breakout_type,
     }
 
 def strategy_flags(x: dict) -> dict:
-    c=x["close"]; m5=x["ma5"]; m10=x["ma10"]; m15=x["ma15"]; m20=x["ma20"]; m60=x["ma60"]; m200=x["ma200"]
+    c=x["close"]; m5=x["ma5"]; m10=x["ma10"]; m20=x["ma20"]; m60=x["ma60"]; m200=x["ma200"]
     flags={}
     if x["above200"] and x["ma200_slope20"] > 0:
-        flags["200MA 趨勢"] = True
+        flags["200MA 多頭趨勢"] = True
+    if x["crossed_up_200"]:
+        flags["200MA 今日突破"] = True
+        if x["volume_ratio"] >= 1.5:
+            flags["200MA 帶量突破"] = True
+    if x["recent_200_breakout"] and x["volume_ratio"] >= 1.2:
+        flags["200MA 近5日突破+量"] = True
+    if x["recent_200_retest"]:
+        flags["200MA 回踩再上"] = True
     if c > m5 > m10 > m20 > m60 > m200:
         flags["多頭排列"] = True
     if c > x["prev20high"] and x["volume_ratio"] >= 1.2:
         flags["20日突破+量能"] = True
     if x["bb_width"] <= 0.10 and c > x["bb_upper"]:
         flags["布林壓縮突破"] = True
-    # Pullback recovery: price is back above 20MA while still above 200MA.
     if x["above200"] and c > m20 and x["bias20"] <= 6:
         flags["強勢回調/回收"] = True
     return flags
@@ -75,4 +139,9 @@ def technical_score(x: dict) -> float:
     score += 10 if x["volume_ratio"] >= 1.2 else 5 if x["volume_ratio"] >= 1.0 else 0
     score += 10 if -0.02 <= x["bias20"]/100 <= 0.06 else 0
     score += 5 if x["close"] > x["prev20high"] else 0
+    # Reward a fresh 200MA breakout, but keep the score capped at 100.
+    if x["crossed_up_200"]:
+        score += 10
+    elif x["recent_200_breakout"]:
+        score += 6
     return min(100.0, score)
