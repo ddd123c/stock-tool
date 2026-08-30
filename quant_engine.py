@@ -9,7 +9,29 @@ MA_WINDOWS = (5, 10, 15, 20, 60, 200)
 def _num(s):
     return pd.to_numeric(s, errors="coerce")
 
-def compute_indicators(df: pd.DataFrame) -> dict | None:
+def _split_adjusted_close(x: pd.DataFrame) -> pd.Series:
+    """Adjust historical prices for stock splits only, not dividends.
+
+    This keeps the technical series continuous after events such as 0052's
+    1-to-7 split, while preserving the user's '未還原' dividend convention.
+    """
+    close = _num(x["close"])
+    if "stock splits" not in x.columns:
+        return close
+
+    splits = _num(x["stock splits"]).fillna(0.0)
+    if not (splits > 0).any():
+        return close
+
+    ratio = splits.where(splits > 0, 1.0)
+    future_factor = ratio.iloc[::-1].cumprod().iloc[::-1]
+    # A split applies from the split date forward, so only dates BEFORE the
+    # split are divided by the future split factor.
+    factor = future_factor.shift(-1).fillna(1.0)
+    return close / factor
+
+
+def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dict | None:
     if df is None or df.empty:
         return None
     x = df.copy()
@@ -18,13 +40,35 @@ def compute_indicators(df: pd.DataFrame) -> dict | None:
         if c not in x.columns:
             return None
         x[c] = _num(x[c])
-    x = x.dropna(subset=["close"])
-    close = x["close"]
+
+    x["close_adj"] = _split_adjusted_close(x)
+    x = x.dropna(subset=["close_adj"])
+    close = x["close_adj"]
     volume = x["volume"].fillna(0)
-    if len(close) < 200:
+
+    if len(close) < 199:
         return None
 
-    ma = {n: close.rolling(n).mean() for n in MA_WINDOWS}
+    # The live value is today's first/current trading-day point.
+    # Therefore 200MA = 199 completed trading-day closes + today's latest price.
+    # If no intraday quote exists (pre-market / after-hours), the latest
+    # completed daily close is used instead.
+    historical_close = close.iloc[:-1] if live_price is not None and len(close) >= 1 else close
+    if live_price is not None and len(historical_close) < 199:
+        return None
+
+    if live_price is not None:
+        live_series = pd.Series(
+            [float(v) for v in historical_close.tail(199)] + [float(live_price)]
+        )
+        analysis_close = live_series
+    else:
+        analysis_close = close
+
+    if len(analysis_close) < 200:
+        return None
+
+    ma = {n: analysis_close.rolling(n).mean() for n in MA_WINDOWS}
     m = {n: float(ma[n].iloc[-1]) for n in MA_WINDOWS}
     ma200 = ma[200]
     ma200_now = m[200]
@@ -34,16 +78,14 @@ def compute_indicators(df: pd.DataFrame) -> dict | None:
     slope20 = (ma200_now / ma200_20d - 1.0) if pd.notna(ma200_20d) and ma200_20d else 0.0
     slope5 = (ma200_now / ma200_5d - 1.0) if pd.notna(ma200_5d) and ma200_5d else 0.0
 
-    c = float(close.iloc[-1])
-    prev_c = float(close.iloc[-2]) if len(close) >= 2 else np.nan
+    c = float(analysis_close.iloc[-1])
+    prev_c = float(analysis_close.iloc[-2]) if len(analysis_close) >= 2 else np.nan
     prev_ma200 = float(ma200.iloc[-2]) if len(ma200) >= 2 and pd.notna(ma200.iloc[-2]) else np.nan
 
-    # 200MA breakout classification.
     crossed_up = pd.notna(prev_c) and pd.notna(prev_ma200) and prev_c <= prev_ma200 and c > ma200_now
     crossed_down = pd.notna(prev_c) and pd.notna(prev_ma200) and prev_c >= prev_ma200 and c < ma200_now
 
-    above = close > ma200
-    # Consecutive days above/below, useful for distinguishing a fresh breakout from an established trend.
+    above = analysis_close > ma200
     run = 0
     current_above = bool(above.iloc[-1])
     for v in reversed(above.tolist()):
@@ -57,28 +99,25 @@ def compute_indicators(df: pd.DataFrame) -> dict | None:
     volume_ratio = vol5 / vol20 if vol20 else 0.0
 
     ma20 = m[20]
-    std20 = float(close.rolling(20).std().iloc[-1])
+    std20 = float(analysis_close.rolling(20).std().iloc[-1])
     upper = ma20 + 2 * std20
     lower = ma20 - 2 * std20
     width = (upper - lower) / ma20 if ma20 else np.nan
-    prev20high = float(close.iloc[-21:-1].max()) if len(close) >= 21 else np.nan
+    prev20high = float(analysis_close.iloc[-21:-1].max()) if len(analysis_close) >= 21 else np.nan
 
-    # Recent 200MA breakout / retest:
-    # If price crossed above 200MA within the last 5 sessions, label it as a recent breakout.
     recent_cross = False
     cross_days_ago = None
-    max_lookback = min(5, len(close) - 1)
+    max_lookback = min(5, len(analysis_close) - 1)
     for i in range(1, max_lookback + 1):
-        if close.iloc[-i-1] <= ma200.iloc[-i-1] and close.iloc[-i] > ma200.iloc[-i]:
+        if analysis_close.iloc[-i-1] <= ma200.iloc[-i-1] and analysis_close.iloc[-i] > ma200.iloc[-i]:
             recent_cross = True
             cross_days_ago = i - 1
             break
 
-    # Retest-and-reclaim: recent close touched/went below 200MA, then current close reclaimed it.
     recent_retest = False
-    if c > ma200_now and len(close) >= 6:
-        for i in range(1, min(6, len(close)-1)):
-            if close.iloc[-i] <= ma200.iloc[-i] * 1.01:
+    if c > ma200_now and len(analysis_close) >= 6:
+        for i in range(1, min(6, len(analysis_close)-1)):
+            if analysis_close.iloc[-i] <= ma200.iloc[-i] * 1.01:
                 recent_retest = True
                 break
 
