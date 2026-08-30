@@ -185,8 +185,12 @@ elif section == "📈 神秘金字塔｜每週大股東":
 
 elif section == "🏦 法人連續買超":
     st.info("外資、投信、自營商分開計算。只要任一法人目前連續買超 ≥ 3 個交易日就上榜；各法人遇到非買超日就重新計算。")
-    st.caption("這一頁只在你切換進來時才執行，避免開網頁時拖慢 200MA。資料快取 30 分鐘。")
-    try:
+    st.caption("🖐️ 手動更新：只有按下「更新法人排行」才會重新抓資料。")
+    update_inst = st.button("🏦 更新法人排行", type="primary", key="update_institution")
+    if update_inst:
+        _cached_institution_rankings.clear()
+    if update_inst:
+      try:
         with st.spinner("正在更新全台股法人買賣超資料..."):
             codes = stocks["code"].astype(str).tolist()
             inst = _cached_institution_rankings(tuple(codes))
@@ -214,7 +218,7 @@ elif section == "🏦 法人連續買超":
             ]
             st.dataframe(show[display_cols], use_container_width=True, hide_index=True)
             st.caption("例如：外資 5 日、投信 0 日，仍會上榜；外資與投信絕不合併計算。")
-    except Exception as e:
+      except Exception as e:
         st.error(f"法人資料更新失敗：{e}")
 
 else:
