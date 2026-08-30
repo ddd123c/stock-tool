@@ -19,16 +19,50 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dic
             return None
         x[c] = _num(x[c])
 
-    # 永豐看盤「還原日」的均線是用還原權息後的價格計算。
-    # 因此 200MA 必須使用 Yahoo Finance 的 Adj Close，而不是原始 Close。
-    # 原始 Close 會在除息後產生價格跳空，造成 200MA 偏高；
-    # 例如 6177 達麗目前永豐還原日的 200T 約 44.50，
-    # 原始 Close 計算會得到約 47.x，這正是先前誤差的來源。
+    # 永豐「還原日」與 Yahoo Adj Close 不同：
+    # 永豐這裡要的是「股票股利/分割還原」，但不把現金股利再扣進歷史均線。
+    # 例如 2449 京元電子在 2026/07/28 除權息：
+    # 現金股利 1 元 + 股票股利 0.5 元（5%），
+    # 永豐還原日的 60T 約 278.86，而 Yahoo Adj Close 會把現金股利也納入，
+    # 導致 200MA 被壓到約 262，與看盤軟體不一致。
+    #
+    # 因此這裡只用 Close + Stock Splits 事件，把除權/分割前的歷史價格
+    # 按未來累積股票比例縮回目前股價尺度；完全不使用 Adj Close。
     x["close_raw"] = _num(x["close"])
-    if "adj close" in x.columns:
-        x["close_adjusted"] = _num(x["adj close"])
-    else:
-        x["close_adjusted"] = x["close_raw"]
+    close = x["close_raw"].copy()
+
+    split_col = None
+    for candidate in ("stock splits", "stock split", "splits"):
+        if candidate in x.columns:
+            split_col = candidate
+            break
+
+    if split_col is not None:
+        splits = _num(x[split_col]).fillna(0)
+        # Yahoo 的 Stock Splits：例如 1.05 代表 5% 股票股利，
+        # 2.0 代表 1 股拆 2 股。事件日的 Close 已是除權後價格，
+        # 所以只調整「事件日前」的歷史收盤。
+        events = []
+        for ts, factor in splits.items():
+            try:
+                factor = float(factor)
+                if factor > 0 and factor != 1.0:
+                    events.append((pd.Timestamp(ts), factor))
+            except Exception:
+                continue
+
+        if events:
+            adjusted = close.astype(float).copy()
+            for event_ts, factor in events:
+                event_date = event_ts.date()
+                mask = pd.Series(
+                    [pd.Timestamp(i).date() < event_date for i in adjusted.index],
+                    index=adjusted.index
+                )
+                adjusted.loc[mask] = adjusted.loc[mask] / factor
+            close = adjusted
+
+    x["close_adjusted"] = close
     x = x.dropna(subset=["close_adjusted"])
     close = x["close_adjusted"]
     volume = x["volume"].fillna(0)
