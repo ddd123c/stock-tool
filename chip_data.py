@@ -7,6 +7,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 import requests
+from bs4 import BeautifulSoup
 
 BASE_URL = "https://norway.twsthr.info/StockHolders.aspx"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36"}
@@ -106,42 +107,69 @@ def fetch_chip_html(url: str = "https://norway.twsthr.info/StockHoldersTopWeek.a
 
 
 def fetch_all_weekly_chip_rankings() -> pd.DataFrame:
-    """抓神秘金字塔週排行全部股票，取最新一週 >400張大股東持有張數增減率。"""
+    """抓神秘金字塔類股排行(週)全部股票，取最新一週 >400張大股東持有張數增減%。"""
     url = "https://norway.twsthr.info/StockHoldersTopWeek.aspx"
     r = requests.get(url, headers=HEADERS, timeout=30)
     r.raise_for_status()
-    tables = pd.read_html(StringIO(r.text))
-    target = None
-    for t in tables:
-        t = _flatten_columns(t)
-        if len(t) < 20:
+
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    # 網站表格欄位是多層表頭，pd.read_html 在這個頁面容易因 rowspan/colspan
+    # 產生不穩定的欄位結構，因此改從 HTML row 直接解析。
+    m = re.search(r"收盤價日期\s*:\s*(\d{4}/\d{2}/\d{2})", soup.get_text(" ", strip=True))
+    latest_date = pd.to_datetime(m.group(1), format="%Y/%m/%d") if m else pd.Timestamp.today().normalize()
+
+    rows = []
+    for tr in soup.find_all("tr"):
+        link = None
+        for a in tr.find_all("a", href=True):
+            href = str(a.get("href"))
+            if "StockHolders.aspx" in href and "STOCK=" in href.upper():
+                link = a
+                break
+        if link is None:
             continue
-        cols = " ".join(map(str, t.columns))
-        if "股票代號" in cols and "大股東" in cols and "持有張數增減" in cols:
-            target = t
-            break
-    if target is None:
-        raise ValueError("找不到神秘金字塔週排行表")
-    date_cols = []
-    for c in target.columns:
-        m = re.search(r"(20\d{6})", str(c))
-        if m:
-            date_cols.append((m.group(1), c))
-    if not date_cols:
-        raise ValueError("找不到週籌碼日期欄位")
-    latest_date, latest_col = max(date_cols, key=lambda x: x[0])
-    stock_col = target.columns[0]
-    out = pd.DataFrame({
-        "代號": target[stock_col].map(_stock_code),
-        "股票": target[stock_col].astype(str).str.replace(r"^\s*\d{4,6}", "", regex=True).str.strip(),
-        "大股東週增減%": pd.to_numeric(
-            target[latest_col].astype(str).str.replace(",", "", regex=False),
-            errors="coerce"
-        ),
-    })
-    out["資料週"] = pd.to_datetime(latest_date, format="%Y%m%d")
-    out = out.dropna(subset=["代號", "大股東週增減%"]).drop_duplicates("代號")
-    return out[["代號", "股票", "資料週", "大股東週增減%"]].reset_index(drop=True)
+
+        code = _stock_code(link.get_text(" ", strip=True))
+        if not code:
+            continue
+
+        cells = tr.find_all(["td", "th"])
+        link_cell_idx = next((i for i, td in enumerate(cells) if link in td.find_all("a", href=True)), None)
+        if link_cell_idx is None:
+            continue
+
+        stock_name = re.sub(r"^\s*\d{4,6}", "", link.get_text(" ", strip=True)).strip()
+
+        # 股票名稱後面依序是：類別、最近數週增減%、走勢、總增減、上週持有%、收盤價、漲跌。
+        # 取類別後最前面的 6 個可解析百分比數字；最後一個就是最新一週。
+        following = cells[link_cell_idx + 2:]
+        weekly_values = []
+        for td in following:
+            txt = td.get_text(" ", strip=True).replace(",", "")
+            if not txt or txt in {"-", "—", "–"}:
+                continue
+            mm = re.fullmatch(r"([+-]?\d+(?:\.\d+)?)\s*%?", txt)
+            if mm:
+                weekly_values.append(float(mm.group(1)))
+                if len(weekly_values) == 6:
+                    break
+
+        if not weekly_values:
+            continue
+
+        rows.append({
+            "代號": code,
+            "股票": stock_name,
+            "資料週": latest_date,
+            "大股東週增減%": weekly_values[-1],
+        })
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        raise ValueError("找不到神秘金字塔週排行的股票資料；可能是網站表格格式更新。")
+
+    return out.drop_duplicates("代號").reset_index(drop=True)
 
 def chip_features(weekly: pd.DataFrame) -> dict:
     """由單股週資料計算 1/4/8 週比例變化與趨勢。"""
