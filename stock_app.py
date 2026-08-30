@@ -3,12 +3,11 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 from chip_data import fetch_all_weekly_chip_rankings
-from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V2.9", layout="wide")
-st.title("📊 台股 Quant Screener V2.9")
-st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法人連買 ＋ 新聞報告")
+st.set_page_config(page_title="台股 Quant Screener V3.0", layout="wide")
+st.title("📊 台股 Quant Screener V3.0")
+st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 新聞報告")
 
 with st.sidebar:
     st.header("⚙️ 200MA 掃描設定")
@@ -23,17 +22,13 @@ def get_stock_list():
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_history_prices(tickers):
-    """Cache daily history for 6 hours; split actions are kept for technical normalization."""
+    """Cache daily history for 6 hours; use Yahoo Finance Close directly for 200MA."""
     return yf.download(list(tickers), period="1y", group_by="ticker", auto_adjust=False, actions=True, progress=False, threads=True)
 
 @st.cache_data(ttl=30, show_spinner=False)
 def get_live_prices(tickers):
     """Only fetch today's intraday prices; this is the fast part of the scan."""
     return yf.download(list(tickers), period="1d", interval="5m", group_by="ticker", auto_adjust=False, progress=False, threads=True)
-
-@st.cache_data(ttl=1800, show_spinner=False)
-def _cached_institution_rankings(codes):
-    return get_institution_streaks(list(codes), lookback_days=45)
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _cached_chip_rankings():
@@ -111,7 +106,7 @@ if universe == "手動輸入":
     stocks = stocks[stocks["code"].isin(wanted)].copy()
 stocks["ticker"] = stocks["code"].map(lambda x: f"{x}.TW")
 
-section = st.radio("功能", ["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東", "🏦 法人連續買超", "📰 新聞報告"], horizontal=True, label_visibility="collapsed")
+section = st.radio("功能", ["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東", "📰 新聞報告"], horizontal=True, label_visibility="collapsed")
 
 if section == "🚀 200MA 即時量化篩選":
     def _technical_live_panel():
@@ -163,26 +158,6 @@ elif section == "📈 神秘金字塔｜每週大股東":
                     st.subheader("🔴 大股東減少最多 Top 20"); st.dataframe(dec, use_container_width=True, hide_index=True)
                 st.caption("排名依神秘金字塔最新一週「>400張大股東持有張數增減率」排序；增加與減少各取 20 檔。")
         except Exception as e: st.error(f"抓取失敗：{e}")
-elif section == "🏦 法人連續買超":
-    st.info("外資、投信、自營商分開計算。只要任一法人目前連續買超 ≥ 3 個交易日就上榜；各法人遇到非買超日就重新計算。")
-    st.caption("🖐️ 手動更新：只有按下「更新法人排行」才會重新抓資料。")
-    update_inst = st.button("🏦 更新法人排行", type="primary", key="update_institution")
-    if update_inst: _cached_institution_rankings.clear()
-    if update_inst:
-        try:
-            with st.spinner("正在更新全台股法人買賣超資料..."):
-                codes = stocks["code"].astype(str).tolist()
-                inst = _cached_institution_rankings(tuple(codes))
-                show = stocks[["code","name"]].copy().rename(columns={"code":"代號","name":"股票"}).merge(inst, on="代號", how="left")
-                for col in ["外資連買天數","投信連買天數","自營商連買天數"]: show[col] = show[col].fillna(0).astype(int)
-                show = show[(show["外資連買天數"] >= 3) | (show["投信連買天數"] >= 3) | (show["自營商連買天數"] >= 3)].copy()
-                show["最強連買"] = show[["外資連買天數","投信連買天數","自營商連買天數"]].max(axis=1)
-                show = show.sort_values(["最強連買","外資連買天數","投信連買天數","自營商連買天數"], ascending=False)
-                st.success(f"目前有 {len(show)} 檔股票至少一種法人連續買超 ≥ 3 日")
-                display_cols = ["代號","股票","外資連買天數","投信連買天數","自營商連買天數","最強連買","外資5日累計(張)","投信5日累計(張)","自營商5日累計(張)"]
-                st.dataframe(show[display_cols], use_container_width=True, hide_index=True)
-                st.caption("例如：外資 5 日、投信 0 日，仍會上榜；外資與投信絕不合併計算。")
-        except Exception as e: st.error(f"法人資料更新失敗：{e}")
 else:
     st.info("📰 新聞報告獨立於量化篩選。輸入代號後抓 Yahoo Finance 最新新聞，整理成「事件 → 可能影響 → 觀察重點」的小作文。")
     news_code = st.text_input("股票代號", value="2330", key="news_code")
@@ -208,4 +183,4 @@ else:
                     st.subheader("🗞️ 原始新聞")
                     for title,publisher,pub in headlines: st.markdown(f"- **{title}**  {publisher}")
             except Exception as e: st.error(f"新聞抓取失敗：{e}")
-st.caption("台股代號來源：tw_stocks.csv｜技術資料：Yahoo Finance｜法人資料：TWSE / TPEx｜週籌碼：神秘金字塔")
+st.caption("台股代號來源：tw_stocks.csv｜技術資料：Yahoo Finance｜週籌碼：神秘金字塔")
