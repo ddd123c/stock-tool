@@ -43,11 +43,17 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dic
         live_adjusted_price = float(live_price) * live_adjust_factor
         idx = historical_close.index
         today = pd.Timestamp.now().normalize()
+
+        # 只把「實際存在於 Yahoo/TWSE 交易資料中的今天」視為交易日。
+        # 週六、週日、國定假日，以及因颱風等原因證交所休市的日期，
+        # 都不會出現在日線資料中，因此不能把 live_price 當成新交易日 append。
+        # 這也讓「近5日／5日／20日」全部以實際交易日資料計算。
         if len(idx) > 0 and pd.Timestamp(idx[-1]).normalize() == today:
             analysis_close = historical_close.iloc[:-1].reset_index(drop=True)
             analysis_close = pd.concat([analysis_close, pd.Series([live_adjusted_price])], ignore_index=True)
         else:
-            analysis_close = pd.concat([historical_close.reset_index(drop=True), pd.Series([live_adjusted_price])], ignore_index=True)
+            # 非交易日：完全忽略即時價，維持最近一個實際交易日。
+            analysis_close = historical_close.reset_index(drop=True)
     else:
         analysis_close = historical_close.reset_index(drop=True)
 
