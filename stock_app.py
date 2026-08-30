@@ -5,8 +5,8 @@ import pandas as pd
 from chip_data import fetch_all_weekly_chip_rankings
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V3.3", layout="wide")
-st.title("📊 台股 Quant Screener V3.3")
+st.set_page_config(page_title="台股 Quant Screener V3.4", layout="wide")
+st.title("📊 台股 Quant Screener V3.4")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 新聞報告")
 
 with st.sidebar:
@@ -22,7 +22,7 @@ def get_stock_list():
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_history_prices(tickers):
-    """Cache daily history for 6 hours; 200MA uses Close plus stock-split/stock-dividend adjustment, not cash-dividend Adj Close."""
+    """Cache daily history for 6 hours; 200MA uses raw Close only (non-adjusted, matching 永豐非還原日)."""
     return yf.download(list(tickers), period="1y", group_by="ticker", auto_adjust=False, actions=True, progress=False, threads=True)
 
 @st.cache_data(ttl=30, show_spinner=False)
@@ -106,7 +106,7 @@ if universe == "手動輸入":
     stocks = stocks[stocks["code"].isin(wanted)].copy()
 stocks["ticker"] = stocks["code"].map(lambda x: f"{x}.TW")
 
-section = st.radio("功能", ["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東", "📰 新聞報告"], horizontal=True, label_visibility="collapsed")
+section = st.radio("功能", ["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東", "🏛️ 法人連續買超", "📰 新聞報告"], horizontal=True, label_visibility="collapsed")
 
 if section == "🚀 200MA 即時量化篩選":
     def _technical_live_panel():
@@ -158,6 +158,27 @@ elif section == "📈 神秘金字塔｜每週大股東":
                     st.subheader("🔴 大股東減少最多 Top 20"); st.dataframe(dec, use_container_width=True, hide_index=True)
                 st.caption("排名依神秘金字塔最新一週「>400張大股東持有張數增減率」排序；增加與減少各取 20 檔。")
         except Exception as e: st.error(f"抓取失敗：{e}")
+elif section == "🏛️ 法人連續買超":
+    st.info("這一頁專門看三大法人連續買超：外資、投信、自營商與合計連買天數。此頁與 200MA 技術掃描完全分開。")
+    if st.button("🏛️ 更新法人連續買超", type="primary", key="institution_refresh"):
+        try:
+            codes = stocks["code"].astype(str).tolist()
+            with st.spinner("正在抓取最新法人買賣超資料..."):
+                inst = get_institution_streaks(codes)
+            if inst.empty:
+                st.warning("目前沒有抓到法人資料。")
+            else:
+                merged = stocks[["code","name"]].copy()
+                merged["代號"] = merged["code"].astype(str)
+                merged = merged.merge(inst, on="代號", how="left")
+                merged = merged.drop(columns=["code"]).rename(columns={"name":"股票"})
+                merged = merged.sort_values(["法人連買天數","外資5日累計(張)"], ascending=[False,False])
+                st.success(f"共取得 {len(merged)} 檔法人資料")
+                display_cols = ["代號","股票","法人連買天數","外資連買天數","投信連買天數","自營商連買天數","外資5日累計(張)","投信5日累計(張)","自營商5日累計(張)"]
+                st.dataframe(merged[display_cols], use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.error(f"法人資料抓取失敗：{e}")
+
 else:
     st.info("📰 新聞報告獨立於量化篩選。輸入代號後抓 Yahoo Finance 最新新聞，整理成「事件 → 可能影響 → 觀察重點」的小作文。")
     news_code = st.text_input("股票代號", value="2330", key="news_code")
