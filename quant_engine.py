@@ -9,28 +9,6 @@ MA_WINDOWS = (5, 10, 15, 20, 60, 200)
 def _num(s):
     return pd.to_numeric(s, errors="coerce")
 
-def _split_adjusted_close(x: pd.DataFrame) -> pd.Series:
-    """Adjust historical prices for stock splits only, not dividends.
-
-    This keeps the technical series continuous after events such as 0052's
-    1-to-7 split, while preserving the user's '未還原' dividend convention.
-    """
-    close = _num(x["close"])
-    if "stock splits" not in x.columns:
-        return close
-
-    splits = _num(x["stock splits"]).fillna(0.0)
-    if not (splits > 0).any():
-        return close
-
-    ratio = splits.where(splits > 0, 1.0)
-    future_factor = ratio.iloc[::-1].cumprod().iloc[::-1]
-    # A split applies from the split date forward, so only dates BEFORE the
-    # split are divided by the future split factor.
-    factor = future_factor.shift(-1).fillna(1.0)
-    return close / factor
-
-
 def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dict | None:
     if df is None or df.empty:
         return None
@@ -41,18 +19,23 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dic
             return None
         x[c] = _num(x[c])
 
-    x["close_adj"] = _split_adjusted_close(x)
-    x = x.dropna(subset=["close_adj"])
-    close = x["close_adj"]
+    # Yahoo Finance 的 Close 已反映股票分割後的歷史價格尺度。
+    # 這裡刻意使用 Close，不再依 actions 的 stock splits 二次除權，
+    # 否則像 0052 這類曾分割的標的會被重複調整，200MA 會明顯偏低。
+    # 同時不使用 Adj Close，因此不把股利再還原進技術均線。
+    x["close_raw"] = _num(x["close"])
+    x = x.dropna(subset=["close_raw"])
+    close = x["close_raw"]
     volume = x["volume"].fillna(0)
 
     if len(close) < 199:
         return None
 
-    # The live value is today's first/current trading-day point.
-    # Therefore 200MA = 199 completed trading-day closes + today's latest price.
-    # If no intraday quote exists (pre-market / after-hours), the latest
-    # completed daily close is used instead.
+    # 盤中：今天視為新的第 1 個交易日資料點。
+    # 因此即時 200MA = 前 199 個已完成交易日 Close + 今天最新成交價。
+    # 下一個開盤日開始，今天就自然成為歷史資料中的第 201 個點，
+    # 滾動視窗會自動扣掉最舊的一天。
+    # 不使用 Adj Close，也不再對 stock split 做第二次調整。
     use_live = live_price is not None
     historical_close = close
     if use_live and len(close) >= 1:
