@@ -53,11 +53,24 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dic
     # Therefore 200MA = 199 completed trading-day closes + today's latest price.
     # If no intraday quote exists (pre-market / after-hours), the latest
     # completed daily close is used instead.
-    historical_close = close.iloc[:-1] if live_price is not None and len(close) >= 1 else close
-    if live_price is not None and len(historical_close) < 199:
+    use_live = live_price is not None
+    historical_close = close
+    if use_live and len(close) >= 1:
+        # Yahoo daily history may or may not already contain today's partial
+        # row. Only remove it when its date is actually today in Taiwan.
+        last_ts = pd.Timestamp(x.index[-1])
+        if last_ts.tzinfo is not None:
+            last_date = last_ts.tz_convert("Asia/Taipei").date()
+        else:
+            last_date = last_ts.date()
+        today_tw = pd.Timestamp.now(tz="Asia/Taipei").date()
+        if last_date == today_tw:
+            historical_close = close.iloc[:-1]
+
+    if use_live and len(historical_close) < 199:
         return None
 
-    if live_price is not None:
+    if use_live:
         live_series = pd.Series(
             [float(v) for v in historical_close.tail(199)] + [float(live_price)]
         )
