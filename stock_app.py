@@ -93,14 +93,13 @@ section = st.radio(
 )
 
 if section == "🚀 200MA 即時量化篩選":
-    @st.fragment(run_every="5m")
     def _technical_live_panel():
-        st.info("這一頁專注技術面：只保留站上 200MA 不超過 5 個交易日的標的。開啟後每 5 分鐘自動掃描，也可按「🔄 立即掃描」。")
+        st.info("這一頁專注技術面：只保留最近 5 個交易日內突破 200MA 的標的。請手動按「🔄 立即掃描」更新，避免自動頻繁抓取造成資料漏抓。")
         c1, c2 = st.columns([1, 4])
         with c1:
             manual_scan = st.button("🔄 立即掃描", type="primary", key="technical_manual_scan")
         with c2:
-            st.caption("⚡ 自動掃描：每 5 分鐘｜手動按鈕：立即重新抓取價格")
+            st.caption("🖐️ 手動掃描：需要時按「立即掃描」重新抓取價格")
         if manual_scan:
             get_prices.clear()
 
