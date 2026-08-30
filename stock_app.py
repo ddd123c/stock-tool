@@ -6,8 +6,8 @@ from chip_data import fetch_all_weekly_chip_rankings
 from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V2.7", layout="wide")
-st.title("📊 台股 Quant Screener V2.7")
+st.set_page_config(page_title="台股 Quant Screener V2.8", layout="wide")
+st.title("📊 台股 Quant Screener V2.8")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法人連買 ＋ 新聞報告")
 
 with st.sidebar:
@@ -21,10 +21,21 @@ with st.sidebar:
 def get_stock_list():
     return pd.read_csv("tw_stocks.csv", dtype={"code": str})
 
-@st.cache_data(ttl=300, show_spinner=False)
-def get_prices(tickers):
-    return yf.download(list(tickers), period="1y", group_by="ticker",
-                       auto_adjust=False, progress=False, threads=True)
+@st.cache_data(ttl=21600, show_spinner=False)
+def get_history_prices(tickers):
+    """Cache daily history for 6 hours; split actions are kept for technical normalization."""
+    return yf.download(
+        list(tickers), period="1y", group_by="ticker",
+        auto_adjust=False, actions=True, progress=False, threads=True
+    )
+
+@st.cache_data(ttl=30, show_spinner=False)
+def get_live_prices(tickers):
+    """Only fetch today's intraday prices; this is the fast part of the scan."""
+    return yf.download(
+        list(tickers), period="1d", interval="5m", group_by="ticker",
+        auto_adjust=False, progress=False, threads=True
+    )
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _cached_institution_rankings(codes):
@@ -43,15 +54,13 @@ def scan_technical(stocks, min_vol, strategy_filter, progress_slot=None, progres
 
     for batch_no, batch in enumerate(batches, start=1):
         if progress_slot is not None:
-            progress_slot.markdown(f":green[🟢 正在掃描第 {batch_no}/{total} 批資料...]")
+            progress_slot.markdown(f":green[🟢 正在掃描第 {batch_no}/{total} 批資料...]" )
         if progress_bar is not None:
             progress_bar.progress(batch_no / total, text=f"200MA 掃描進度：{batch_no}/{total} 批")
 
         try:
-            prices = yf.download(
-                tuple(batch), period="1y", group_by="ticker",
-                auto_adjust=False, progress=False, threads=True
-            )
+            history = get_history_prices(tuple(batch))
+            live = get_live_prices(tuple(batch))
         except Exception:
             continue
 
@@ -60,17 +69,31 @@ def scan_technical(stocks, min_vol, strategy_filter, progress_slot=None, progres
             ticker = stock["ticker"]
             try:
                 if len(batch) == 1:
-                    df = prices
+                    df = history
+                    live_df = live
                 else:
-                    if not hasattr(prices, "columns") or ticker not in prices.columns.levels[0]:
+                    if not hasattr(history, "columns") or ticker not in history.columns.levels[0]:
                         continue
-                    df = prices[ticker]
+                    df = history[ticker]
+                    live_df = live[ticker] if hasattr(live, "columns") and ticker in live.columns.levels[0] else None
 
-                x = compute_indicators(df)
+                # During market hours use the latest intraday transaction.
+                # Before/after market, fall back to the latest completed daily close.
+                live_price = None
+                if live_df is not None and not live_df.empty and "Close" in live_df.columns:
+                    s = pd.to_numeric(live_df["Close"], errors="coerce").dropna()
+                    if not s.empty:
+                        live_price = float(s.iloc[-1])
+
+                x = compute_indicators(df, live_price=live_price)
                 if not x or x["vol5"] < min_vol * 1000:
                     continue
 
-                # 只保留最近 5 個交易日內由下往上突破 200MA 的標的。
+                # Never keep a stock that is currently below 200MA.
+                if not x.get("above200", False):
+                    continue
+
+                # Keep only breakouts within the last 5 completed/current trading sessions.
                 if not x.get("recent_200_breakout", False):
                     continue
                 if strategy_filter == "只看今日突破" and not x["crossed_up_200"]:
@@ -121,7 +144,8 @@ if section == "🚀 200MA 即時量化篩選":
         with c2:
             st.caption("🖐️ 手動掃描：需要時按「立即掃描」重新抓取價格")
         if manual_scan:
-            get_prices.clear()
+            get_history_prices.clear()
+            get_live_prices.clear()
 
         try:
             progress_slot = st.empty()
