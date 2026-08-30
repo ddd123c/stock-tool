@@ -308,13 +308,16 @@ if st.button("🔄 立即掃描", type="primary"):
         df_result["_priority"] = (
             df_result["狀態"].str.contains("突破").astype(int)
         )
+        df_result["_distance_num"] = (
+            df_result["距200MA"].str.replace("%", "", regex=False).astype(float)
+        )
         df_result = (
             df_result
             .sort_values(
-                ["_priority", "距200MA"],
+                ["_priority", "_distance_num"],
                 ascending=[False, False]
             )
-            .drop(columns="_priority")
+            .drop(columns=["_priority", "_distance_num"])
             .reset_index(drop=True)
         )
 
