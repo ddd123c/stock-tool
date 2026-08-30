@@ -33,27 +33,23 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dic
     if len(close) < 199:
         return None
 
-    # 盤中：今天視為新的第 1 個交易日資料點。
-    # 即時 200MA = 前 199 個已完成交易日「還原收盤價」 + 今天最新價格。
-    # 下一個開盤日開始，昨天會自然成為歷史資料中的第 200 個點，
-    # 新的一天成為第 201 個點，滾動視窗自動扣掉最舊交易日。
+    # 即時 200MA：若 Yahoo 的日資料已包含今天，就用最新成交價「替換今天」，
+    # 絕不能把今天再 append 一次，否則 200MA 會偏離看盤軟體。
     use_live = live_price is not None
-    historical_close = close
-
-    # 非還原日不需要任何權息倍率換算；盤中直接使用最新成交價。
+    historical_close = close.copy()
     live_adjust_factor = 1.0
-    if use_live and len(historical_close) < 199:
-        return None
 
     if use_live:
         live_adjusted_price = float(live_price) * live_adjust_factor
-        analysis_close = pd.concat(
-            [historical_close.reset_index(drop=True),
-             pd.Series([live_adjusted_price])],
-            ignore_index=True
-        )
+        idx = historical_close.index
+        today = pd.Timestamp.now().normalize()
+        if len(idx) > 0 and pd.Timestamp(idx[-1]).normalize() == today:
+            analysis_close = historical_close.iloc[:-1].reset_index(drop=True)
+            analysis_close = pd.concat([analysis_close, pd.Series([live_adjusted_price])], ignore_index=True)
+        else:
+            analysis_close = pd.concat([historical_close.reset_index(drop=True), pd.Series([live_adjusted_price])], ignore_index=True)
     else:
-        analysis_close = close.reset_index(drop=True)
+        analysis_close = historical_close.reset_index(drop=True)
 
     if len(analysis_close) < 200:
         return None
