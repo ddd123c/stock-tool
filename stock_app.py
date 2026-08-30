@@ -6,8 +6,8 @@ import plotly.express as px
 from chip_data import fetch_stock_weekly, chip_features
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V2.3", layout="wide")
-st.title("📊 台股 Quant Screener V2.3")
+st.set_page_config(page_title="台股 Quant Screener V2.4", layout="wide")
+st.title("📊 台股 Quant Screener V2.4")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東籌碼（兩個獨立功能）")
 
 with st.sidebar:
@@ -50,6 +50,9 @@ def scan_technical(stocks, min_vol, strategy_filter):
             flags = strategy_flags(x)
             if not flags:
                 continue
+            # 只保留剛站上 200MA 的標的：站上時間不得超過 5 個交易日。
+            if x["above200_run"] > 5:
+                continue
             if strategy_filter == "只看今日突破" and not x["crossed_up_200"]:
                 continue
             if strategy_filter == "只看近5日突破" and not x["recent_200_breakout"]:
@@ -79,7 +82,7 @@ stocks["ticker"] = stocks["code"].map(lambda x: f"{x}.TW")
 tab1, tab2 = st.tabs(["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東"])
 
 with tab1:
-    st.info("這一頁專注技術面：適合盤中/盤後快速查看 200MA 突破、回踩、量能與技術分數。這裡不混入每週大股東資料。")
+    st.info("這一頁專注技術面：只保留站上 200MA 不超過 5 個交易日的標的，適合盤中/盤後快速查看。這裡不混入每週大股東資料。")
     if st.button("🚀 開始量化掃描", type="primary"):
         with st.spinner("正在掃描台股技術面資料..."):
             result = scan_technical(stocks, min_vol, strategy_filter)
