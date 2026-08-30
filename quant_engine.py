@@ -19,48 +19,11 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dic
             return None
         x[c] = _num(x[c])
 
-    # 永豐「還原日」與 Yahoo Adj Close 不同：
-    # 永豐這裡要的是「股票股利/分割還原」，但不把現金股利再扣進歷史均線。
-    # 例如 2449 京元電子在 2026/07/28 除權息：
-    # 現金股利 1 元 + 股票股利 0.5 元（5%），
-    # 永豐還原日的 60T 約 278.86，而 Yahoo Adj Close 會把現金股利也納入，
-    # 導致 200MA 被壓到約 262，與看盤軟體不一致。
-    #
-    # 因此這裡只用 Close + Stock Splits 事件，把除權/分割前的歷史價格
-    # 按未來累積股票比例縮回目前股價尺度；完全不使用 Adj Close。
+    # 永豐看盤使用的是「非還原日」：200MA 直接以原始收盤價計算。
+    # 不使用 Yahoo Adj Close，也不做現金股利、股票股利或分割還原。
+    # 這樣才能對齊永豐日K圖上的 200T，例如 2449 京元電子。
     x["close_raw"] = _num(x["close"])
     close = x["close_raw"].copy()
-
-    split_col = None
-    for candidate in ("stock splits", "stock split", "splits"):
-        if candidate in x.columns:
-            split_col = candidate
-            break
-
-    if split_col is not None:
-        splits = _num(x[split_col]).fillna(0)
-        # Yahoo 的 Stock Splits：例如 1.05 代表 5% 股票股利，
-        # 2.0 代表 1 股拆 2 股。事件日的 Close 已是除權後價格，
-        # 所以只調整「事件日前」的歷史收盤。
-        events = []
-        for ts, factor in splits.items():
-            try:
-                factor = float(factor)
-                if factor > 0 and factor != 1.0:
-                    events.append((pd.Timestamp(ts), factor))
-            except Exception:
-                continue
-
-        if events:
-            adjusted = close.astype(float).copy()
-            for event_ts, factor in events:
-                event_date = event_ts.date()
-                mask = pd.Series(
-                    [pd.Timestamp(i).date() < event_date for i in adjusted.index],
-                    index=adjusted.index
-                )
-                adjusted.loc[mask] = adjusted.loc[mask] / factor
-            close = adjusted
 
     x["close_adjusted"] = close
     x = x.dropna(subset=["close_adjusted"])
@@ -77,25 +40,8 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dic
     use_live = live_price is not None
     historical_close = close
 
-    # 取得「今天最新價格」對應的還原倍率。
-    # 台股除息後目前價格通常倍率為 1；若資料源在今日仍提供 Adj Close，
-    # 則直接使用今日 Adj Close / Close 作為盤中換算倍率。
+    # 非還原日不需要任何權息倍率換算；盤中直接使用最新成交價。
     live_adjust_factor = 1.0
-    if use_live and len(x) >= 1:
-        last_raw = float(x["close_raw"].iloc[-1]) if pd.notna(x["close_raw"].iloc[-1]) else np.nan
-        last_adj = float(x["close_adjusted"].iloc[-1]) if pd.notna(x["close_adjusted"].iloc[-1]) else np.nan
-        if pd.notna(last_raw) and last_raw != 0 and pd.notna(last_adj):
-            live_adjust_factor = last_adj / last_raw
-
-        last_ts = pd.Timestamp(x.index[-1])
-        if last_ts.tzinfo is not None:
-            last_date = last_ts.tz_convert("Asia/Taipei").date()
-        else:
-            last_date = last_ts.date()
-        today_tw = pd.Timestamp.now(tz="Asia/Taipei").date()
-        if last_date == today_tw:
-            historical_close = close.iloc[:-1]
-
     if use_live and len(historical_close) < 199:
         return None
 
