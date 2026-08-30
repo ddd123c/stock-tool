@@ -1,4 +1,5 @@
 import pandas as pd
+from typing import Optional
 
 
 def _completed_close(df: pd.DataFrame) -> pd.Series:
@@ -26,7 +27,7 @@ def _completed_close(df: pd.DataFrame) -> pd.Series:
     return close
 
 
-def calculate_200ma_signal(df: pd.DataFrame, realtime_price: float | None):
+def calculate_200ma_signal(df: pd.DataFrame, realtime_price: Optional[float]):
     """台股 200MA：200 個交易日窗口 + 扣抵值 + 盤中即時價格。
 
     正式 200MA：
