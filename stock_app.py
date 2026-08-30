@@ -99,8 +99,10 @@ with tab1:
                     except Exception:
                         result["外資連買天數"] = 0
                         result["投信連買天數"] = 0
+                        result["自營商連買天數"] = 0
                         result["外資5日累計(張)"] = 0.0
                         result["投信5日累計(張)"] = 0.0
+                        result["自營商5日累計(張)"] = 0.0
                     try:
                         chip = fetch_all_weekly_chip_rankings()
                         chip = chip[["代號", "大股東週增減%"]].drop_duplicates("代號")
@@ -114,6 +116,8 @@ with tab1:
                         parts.append(f"外資{int(r['外資連買天數'])}日")
                     if pd.notna(r["投信連買天數"]) and r["投信連買天數"] > 0:
                         parts.append(f"投信{int(r['投信連買天數'])}日")
+                    if pd.notna(r["自營商連買天數"]) and r["自營商連買天數"] > 0:
+                        parts.append(f"自營商{int(r['自營商連買天數'])}日")
                     return "🔥 " + "＋".join(parts) if parts else "—"
                 result["法人標記"] = result.apply(_institution_label, axis=1)
                 # 沒有任何法人連買時不要顯示空的 🔥 外資。
@@ -124,7 +128,7 @@ with tab1:
                 result = result.sort_values(["技術分"], ascending=False)
                 st.success(f"找到 {len(result)} 檔符合 200MA 技術條件的標的")
                 display_cols = ["代號","股票","技術分","200MA狀態","站上200MA天數",
-                                "法人標記","外資連買天數","投信連買天數","大戶週籌碼",
+                                "法人標記","外資連買天數","投信連買天數","自營商連買天數","大戶週籌碼",
                                 "收盤","200MA","量比(5日/20日)","200MA斜率20D%","策略"]
                 st.dataframe(result[display_cols], use_container_width=True, hide_index=True)
                 st.subheader("🏆 Top 20")
