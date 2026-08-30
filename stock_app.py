@@ -84,40 +84,37 @@ if universe == "手動輸入":
     stocks = stocks[stocks["code"].isin(wanted)].copy()
 stocks["ticker"] = stocks["code"].map(lambda x: f"{x}.TW")
 
-tab1, tab2, tab3 = st.tabs(["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東", "🏦 法人連續買超"])
+tab1, tab2, tab3, tab4 = st.tabs(["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東", "🏦 法人連續買超", "📰 新聞報告"])
 
 with tab1:
     @st.fragment(run_every="5m")
     def _technical_live_panel():
-        st.info("這一頁專注技術面：只保留站上 200MA 不超過 5 個交易日的標的。開啟後會自動掃描；也可隨時按「🔄 立即掃描」。資料來源為 Yahoo Finance，實際更新速度取決於資料源。")
+        st.info("這一頁專注技術面：只保留站上 200MA 不超過 5 個交易日的標的。開啟後會自動掃描；也可按「🔄 立即掃描」。")
         c1, c2 = st.columns([1, 4])
         with c1:
             manual_scan = st.button("🔄 立即掃描", type="primary", key="technical_manual_scan")
         with c2:
             st.caption("⚡ 自動掃描：每 5 分鐘｜手動按鈕：立即重新抓取")
-
         if manual_scan:
             get_prices.clear()
 
         try:
             with st.spinner("正在掃描台股技術面資料..."):
                 result = scan_technical(stocks, min_vol, strategy_filter)
+
             if result.empty:
-                st.warning("目前沒有符合條件的標的。可先把「200MA策略」設為「全部」，確認資料正常。")
+                st.warning("目前沒有符合條件的標的。可把「200MA策略」設為「全部」確認資料正常。")
             else:
                 codes = result["代號"].astype(str).tolist()
-                with st.spinner("正在補上外資/投信連買與神秘金字塔本週大戶變化..."):
+                with st.spinner("正在補上法人連買與本週大戶變化..."):
                     try:
                         inst = get_institution_streaks(codes)
                         result = result.merge(inst, on="代號", how="left")
                     except Exception:
-                        result["法人連買天數"] = 0
-                        result["外資連買天數"] = 0
-                        result["投信連買天數"] = 0
-                        result["自營商連買天數"] = 0
-                        result["外資5日累計(張)"] = 0.0
-                        result["投信5日累計(張)"] = 0.0
-                        result["自營商5日累計(張)"] = 0.0
+                        for col in ["法人連買天數","外資連買天數","投信連買天數","自營商連買天數"]:
+                            result[col] = 0
+                        for col in ["外資5日累計(張)","投信5日累計(張)","自營商5日累計(張)"]:
+                            result[col] = 0.0
                     try:
                         chip = fetch_all_weekly_chip_rankings()
                         chip = chip[["代號", "大股東週增減%"]].drop_duplicates("代號")
@@ -127,19 +124,16 @@ with tab1:
 
                 def _institution_label(r):
                     parts = []
-                    if pd.notna(r["外資連買天數"]) and r["外資連買天數"] > 0:
-                        parts.append(f"外資{int(r['外資連買天數'])}日")
-                    if pd.notna(r["投信連買天數"]) and r["投信連買天數"] > 0:
-                        parts.append(f"投信{int(r['投信連買天數'])}日")
-                    if pd.notna(r["自營商連買天數"]) and r["自營商連買天數"] > 0:
-                        parts.append(f"自營商{int(r['自營商連買天數'])}日")
+                    for who, col in [("外資","外資連買天數"),("投信","投信連買天數"),("自營商","自營商連買天數")]:
+                        v = r.get(col, 0)
+                        if pd.notna(v) and v > 0:
+                            parts.append(f"{who}{int(v)}日")
                     return "🔥 " + "＋".join(parts) if parts else "—"
+
                 result["法人標記"] = result.apply(_institution_label, axis=1)
-                result.loc[(result["外資連買天數"].fillna(0) <= 0) & (result["投信連買天數"].fillna(0) <= 0), "法人標記"] = "—"
-                result["大戶週籌碼"] = result["大股東週增減%"].apply(
-                    lambda v: "—" if pd.isna(v) else f"{v:+.2f}%"
-                )
-                result = result.sort_values(["技術分"], ascending=False)
+                result["大戶週籌碼"] = result["大股東週增減%"].apply(lambda v: "—" if pd.isna(v) else f"{v:+.2f}%")
+                result = result.sort_values("技術分", ascending=False)
+
                 st.success(f"找到 {len(result)} 檔符合 200MA 技術條件的標的")
                 display_cols = ["代號","股票","技術分","200MA狀態","站上200MA天數",
                                 "法人標記","外資連買天數","投信連買天數","自營商連買天數","大戶週籌碼",
@@ -147,7 +141,9 @@ with tab1:
                 st.dataframe(result[display_cols], use_container_width=True, hide_index=True)
                 st.subheader("🏆 Top 20")
                 st.dataframe(result[display_cols].head(20), use_container_width=True, hide_index=True)
-                st.caption("200MA、法人、週大戶三者資料彼此獨立；法人與大戶只作旁邊標記，不參與 200MA 篩選或技術分。")
+                st.caption("200MA、法人、週大戶三者獨立；法人與大戶只作旁邊標記，不參與 200MA 篩選或技術分。")
+        except Exception as e:
+            st.error(f"技術掃描失敗：{e}")
 
     _technical_live_panel()
 
@@ -157,20 +153,78 @@ with tab2:
         try:
             with st.spinner("正在抓取神秘金字塔全部股票的最新一週籌碼..."):
                 chip = fetch_all_weekly_chip_rankings()
-            latest = chip["資料週"].iloc[0].strftime("%Y/%m/%d")
-            st.success(f"共取得 {len(chip)} 檔股票｜最新資料週：{latest}")
-            inc = chip.sort_values("大股東週增減%", ascending=False).head(20)
-            dec = chip.sort_values("大股東週增減%", ascending=True).head(20)
-            left, right = st.columns(2)
-            with left:
-                st.subheader("🟢 大股東增加最多 Top 20")
-                st.dataframe(inc, use_container_width=True, hide_index=True)
-            with right:
-                st.subheader("🔴 大股東減少最多 Top 20")
-                st.dataframe(dec, use_container_width=True, hide_index=True)
-            st.caption("排名依神秘金字塔最新一週「>400張大股東持有張數增減率」排序；增加與減少各取 20 檔。")
+            if chip.empty:
+                st.warning("沒有抓到資料。")
+            else:
+                latest = chip["資料週"].iloc[0].strftime("%Y/%m/%d") if hasattr(chip["資料週"].iloc[0], "strftime") else str(chip["資料週"].iloc[0])
+                st.success(f"共取得 {len(chip)} 檔股票｜最新資料週：{latest}")
+                inc = chip.sort_values("大股東週增減%", ascending=False).head(20)
+                dec = chip.sort_values("大股東週增減%", ascending=True).head(20)
+                left, right = st.columns(2)
+                with left:
+                    st.subheader("🟢 大股東增加最多 Top 20")
+                    st.dataframe(inc, use_container_width=True, hide_index=True)
+                with right:
+                    st.subheader("🔴 大股東減少最多 Top 20")
+                    st.dataframe(dec, use_container_width=True, hide_index=True)
+                st.caption("排名依神秘金字塔最新一週「>400張大股東持有張數增減率」排序；增加與減少各取 20 檔。")
         except Exception as e:
             st.error(f"抓取失敗：{e}")
+
+with tab3:
+    st.info("法人功能獨立於 200MA：外資＋投信＋自營商合計連續買超 ≥ 3 個交易日就上榜；只要出現法人合計非買超日就重新計算。")
+    try:
+        st.caption("開啟網頁時自動更新；資料快取 30 分鐘，避免每次畫面互動都重新抓全市場。")
+        with st.spinner("正在更新全台股法人買賣超資料..."):
+            codes = stocks["code"].astype(str).tolist()
+            inst = _cached_institution_rankings(tuple(codes))
+            show = stocks[["code", "name"]].copy().rename(columns={"code":"代號","name":"股票"})
+            show = show.merge(inst, on="代號", how="left")
+            show["法人連買天數"] = show["法人連買天數"].fillna(0).astype(int)
+            show = show[show["法人連買天數"] >= 3].sort_values(
+                ["法人連買天數","外資連買天數","投信連買天數"], ascending=False
+            )
+            st.success(f"目前有 {len(show)} 檔股票符合「法人連續買超 ≥ 3 日」")
+            display_cols = ["代號","股票","法人連買天數","外資連買天數","投信連買天數","自營商連買天數",
+                            "外資5日累計(張)","投信5日累計(張)","自營商5日累計(張)"]
+            st.dataframe(show[display_cols], use_container_width=True, hide_index=True)
+            st.caption("「法人連買天數」以三大法人每日買賣超合計判定。")
+    except Exception as e:
+        st.error(f"自動更新失敗：{e}")
+
+with tab4:
+    st.info("📰 新聞報告獨立於量化篩選。輸入代號後抓 Yahoo Finance 最新新聞，整理成「事件 → 可能影響 → 觀察重點」的小作文。")
+    news_code = st.text_input("股票代號", value="2330", key="news_code")
+    news_count = st.slider("新聞數量", 3, 10, 5, key="news_count")
+    if st.button("📰 產生新聞報告", type="primary", key="news_report"):
+        code = news_code.strip().replace(".TW","").replace(".TWO","")
+        if not code.isdigit():
+            st.error("請輸入純數字台股代號，例如 2330。")
+        else:
+            try:
+                with st.spinner("正在抓取最新新聞..."):
+                    items = yf.Ticker(f"{code}.TW").news[:news_count]
+                if not items:
+                    st.warning("目前沒有抓到新聞。")
+                else:
+                    headlines = []
+                    for item in items:
+                        content = item.get("content", item)
+                        title = content.get("title") or item.get("title") or "未命名新聞"
+                        publisher = content.get("provider", {}).get("displayName") or item.get("publisher") or ""
+                        pub = content.get("pubDate") or item.get("providerPublishTime")
+                        headlines.append((title, publisher, pub))
+                    st.subheader(f"📝 {code} 新聞小作文")
+                    st.write(
+                        f"近期新聞焦點主要集中在「{headlines[0][0]}」等事件。"
+                        "從目前標題可先觀察公司基本面、產業需求、訂單/產品進度與市場預期是否出現變化。"
+                        "新聞本身不代表股價必然上漲或下跌，建議搭配 200MA 趨勢、成交量與法人籌碼交叉確認。"
+                    )
+                    st.subheader("🗞️ 原始新聞")
+                    for title, publisher, pub in headlines:
+                        st.markdown(f"- **{title}**  {publisher}")
+            except Exception as e:
+                st.error(f"新聞抓取失敗：{e}")
 
 st.caption("台股代號來源：tw_stocks.csv｜技術資料：Yahoo Finance｜法人資料：TWSE / TPEx｜週籌碼：神秘金字塔")
 
