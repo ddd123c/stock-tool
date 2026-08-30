@@ -10,8 +10,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 st.set_page_config(page_title="台股 200MA 即時量化篩選 V2.9", layout="wide")
 
-
-# 200MA 驗證：輸入基準股票後，可先確認「未還原、200交易日」計算。
 st.sidebar.markdown("---")
 st.sidebar.subheader("🧪 200MA 基準驗證")
 st.sidebar.caption("先用已知答案驗證計算，再進行全台股掃描。")
@@ -45,7 +43,6 @@ st.sidebar.info(
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_all_tickers():
-    """取得上市/上櫃股票代號與交易所別。"""
     stock_dict = {}
 
     urls = [
@@ -72,7 +69,7 @@ def get_all_tickers():
                     stock_dict[code] = {
                         "name": name,
                         "exchange": exchange,
-                        "ticker": f"{code}.{ 'TW' if exchange == 'tse' else 'TWO'}",
+                        "ticker": f"{code}.{'TW' if exchange == 'tse' else 'TWO'}",
                     }
         except Exception:
             continue
@@ -82,7 +79,6 @@ def get_all_tickers():
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def download_history_chunk(tickers):
-    """Yahoo 歷史日線：每個 chunk 快取 6 小時；盤中價格另從交易所即時取得。歷史資料抓 2 年作為 200 個交易日計算緩衝。"""
     tickers = list(tickers)
     if not tickers:
         return pd.DataFrame()
@@ -103,7 +99,6 @@ def download_history_chunk(tickers):
 
 
 def get_close_frame(data, ticker):
-    """兼容單檔與多檔 yfinance 回傳格式。"""
     if data is None or data.empty:
         return None
 
@@ -118,16 +113,16 @@ def get_close_frame(data, ticker):
         if "Close" not in df.columns:
             return None
 
-        return df[["Close", "Volume"]].dropna(how="all")
+        columns = ["Close"]
+        if "Volume" in df.columns:
+            columns.append("Volume")
+
+        return df[columns].dropna(how="all")
     except Exception:
         return None
 
 
 def get_realtime_prices(stock_items):
-    """
-    使用 TWSE MIS 即時行情。
-    上市/上櫃可以批次查詢，不再為每檔股票呼叫 Yahoo 即時報價。
-    """
     prices = {}
     items = list(stock_items)
     chunk_size = 80
@@ -138,11 +133,9 @@ def get_realtime_prices(stock_items):
             f"{item['exchange']}_{code}.tw" for code, item in chunk
         )
 
-        url = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
-
         try:
             res = requests.get(
-                url,
+                "https://mis.twse.com.tw/stock/api/getStockInfo.jsp",
                 params={"ex_ch": ex_ch, "json": "1", "delay": "0"},
                 timeout=15,
                 headers={"User-Agent": "Mozilla/5.0"},
@@ -154,8 +147,6 @@ def get_realtime_prices(stock_items):
                 code = str(row.get("c", "")).strip()
                 z = str(row.get("z", "")).strip()
                 y = str(row.get("y", "")).strip()
-
-                # 盤中 z 是最新成交價；無成交時退回昨收。
                 price_text = z if z not in ("", "-", "0") else y
 
                 try:
@@ -174,10 +165,7 @@ def scan_200ma(stock_dict, target_codes, min_vol):
     cache_plot = {}
 
     chunk_size = 80
-    chunks = [
-        target_codes[i:i + chunk_size]
-        for i in range(0, len(target_codes), chunk_size)
-    ]
+    chunks = [target_codes[i:i + chunk_size] for i in range(0, len(target_codes), chunk_size)]
 
     status = st.empty()
     progress = st.progress(0.0)
@@ -194,8 +182,7 @@ def scan_200ma(stock_dict, target_codes, min_vol):
 
     for chunk_no, codes in enumerate(chunks, start=1):
         status.markdown(
-            f"🟢 **正在計算 200MA：第 {chunk_no}/{len(chunks)} 批 "
-            f"（{len(codes)} 檔）...**"
+            f"🟢 **正在計算 200MA：第 {chunk_no}/{len(chunks)} 批（{len(codes)} 檔）...**"
         )
 
         yf_tickers = tuple(stock_dict[c]["ticker"] for c in codes)
@@ -214,19 +201,18 @@ def scan_200ma(stock_dict, target_codes, min_vol):
             if df is None or len(df) < 199:
                 continue
 
-            volume = pd.to_numeric(df["Volume"], errors="coerce").dropna()
-
-            if len(volume) < 5:
-                continue
-
-            vol5 = float(volume.tail(5).mean())
-
-            if vol5 < min_vol * 1000:
-                continue
+            if "Volume" in df.columns:
+                volume = pd.to_numeric(df["Volume"], errors="coerce").dropna()
+                if len(volume) < 5:
+                    continue
+                vol5 = float(volume.tail(5).mean())
+                if vol5 < min_vol * 1000:
+                    continue
+            else:
+                vol5 = 0
 
             signal = calculate_200ma_signal(df, price)
 
-            # signal=None 包含「跌破 200MA 就排除」。
             if signal is None:
                 continue
 
@@ -248,7 +234,6 @@ def scan_200ma(stock_dict, target_codes, min_vol):
 
     progress.empty()
     status.markdown("🟢 **200MA 掃描完成！**")
-
     return results, cache_plot
 
 
@@ -271,12 +256,21 @@ if source_option == "手動輸入":
     manual_text = st.sidebar.text_area(
         "股票代號",
         "1609,2330,2603,3017,3605,6446",
+        help="支援逗號、中文逗號、頓號、空白、換行，例如：0052、8131、6449",
     )
-    target_codes = [
-        x.strip()
-        for x in manual_text.replace("，", ",").split(",")
-        if x.strip()
-    ]
+
+    # 支援 ,  ，  、  空白與換行，避免使用者輸入「0052、8131、6449」時被當成一個代號。
+    normalized = (
+        manual_text
+        .replace("，", ",")
+        .replace("、", ",")
+        .replace("；", ",")
+        .replace(";", ",")
+        .replace("\n", ",")
+        .replace("\t", ",")
+        .replace(" ", ",")
+    )
+    target_codes = [x.strip() for x in normalized.split(",") if x.strip()]
 else:
     target_codes = None
 
@@ -292,63 +286,39 @@ if st.button("🔄 立即掃描", type="primary"):
     if target_codes is None:
         target_codes = list(all_stocks.keys())
     else:
+        invalid_codes = [code for code in target_codes if code not in all_stocks]
         target_codes = [code for code in target_codes if code in all_stocks]
+
+        if invalid_codes:
+            st.warning(f"以下代號找不到：{', '.join(invalid_codes)}")
 
     if not target_codes:
         st.warning("沒有找到有效的台股代號。")
         st.stop()
 
-    st.info(
-        f"本次掃描 {len(target_codes)} 檔。"
-        "歷史資料會快取，下一次掃描不必重新抓 2 年資料。"
-    )
+    st.info(f"本次掃描 {len(target_codes)} 檔：{', '.join(target_codes)}。歷史資料會快取。")
 
-    results, stock_cache = scan_200ma(
-        all_stocks,
-        target_codes,
-        min_vol_limit,
-    )
+    results, stock_cache = scan_200ma(all_stocks, target_codes, min_vol_limit)
 
     if results:
         df_result = pd.DataFrame(results)
-
-        # 突破優先，再依距離 200MA 由高到低。
-        df_result["_priority"] = (
-            df_result["狀態"].str.contains("突破").astype(int)
-        )
-        df_result["_distance_num"] = (
-            df_result["距200MA"].str.replace("%", "", regex=False).astype(float)
-        )
+        df_result["_priority"] = df_result["狀態"].str.contains("突破").astype(int)
+        df_result["_distance_num"] = df_result["距200MA"].str.replace("%", "", regex=False).astype(float)
         df_result = (
             df_result
-            .sort_values(
-                ["_priority", "_distance_num"],
-                ascending=[False, False]
-            )
+            .sort_values(["_priority", "_distance_num"], ascending=[False, False])
             .drop(columns=["_priority", "_distance_num"])
             .reset_index(drop=True)
         )
 
         st.success(f"找到 {len(df_result)} 檔站上 200MA 的股票")
-
-        st.dataframe(
-            df_result,
-            use_container_width=True,
-            hide_index=True,
-        )
+        st.dataframe(df_result, use_container_width=True, hide_index=True)
 
         if stock_cache:
-            selected = st.selectbox(
-                "📈 個股歷史走勢",
-                list(stock_cache.keys()),
-            )
-
+            selected = st.selectbox("📈 個股歷史走勢", list(stock_cache.keys()))
             if selected:
                 plot_df = stock_cache[selected].copy()
                 plot_df["MA200"] = plot_df["Close"].rolling(200).mean()
                 st.line_chart(plot_df[["Close", "MA200"]].tail(250))
     else:
-        st.warning(
-            "目前沒有符合條件的股票。"
-            "注意：跌破 200MA 的股票不會上榜。"
-        )
+        st.warning("目前沒有符合條件的股票。注意：跌破 200MA 的股票不會上榜。")
