@@ -23,7 +23,7 @@ def get_stock_list():
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_prices(tickers):
-    # 1 年資料已足夠計算 200MA、20D斜率與近5日突破，減少首次掃描下載量。
+    # 分批下載，避免一次把全台股資料塞給 Yahoo 導致卡住。
     return yf.download(list(tickers), period="1y", group_by="ticker",
                        auto_adjust=False, progress=False, threads=True)
 
@@ -35,20 +35,33 @@ def _cached_institution_rankings(codes):
 def _cached_chip_rankings():
     return fetch_all_weekly_chip_rankings()
 
-def scan_technical(stocks, min_vol, strategy_filter):
+def scan_technical(stocks, min_vol, strategy_filter, progress_slot=None, progress_bar=None):
     tickers = stocks["ticker"].tolist()
-    prices = get_prices(tuple(tickers))
     rows = []
-    for _, stock in stocks.iterrows():
-        code = str(stock["code"])
-        ticker = stock["ticker"]
+    batch_size = 100
+    batches = [tickers[i:i + batch_size] for i in range(0, len(tickers), batch_size)]
+    total = len(batches)
+    for batch_no, batch in enumerate(batches, start=1):
+        if progress_slot is not None:
+            progress_slot.markdown(f":green[🟢 正在掃描第 {batch_no}/{total} 批資料...]")
+        if progress_bar is not None:
+            progress_bar.progress(batch_no / total, text=f"200MA 掃描進度：{batch_no}/{total} 批")
         try:
-            if len(tickers) == 1:
-                df = prices
-            else:
-                if not hasattr(prices, "columns") or ticker not in prices.columns.levels[0]:
-                    continue
-                df = prices[ticker]
+            prices = yf.download(tuple(batch), period="1y", group_by="ticker",
+                                 auto_adjust=False, progress=False, threads=True)
+        except Exception:
+            continue
+
+        for _, stock in stocks[stocks["ticker"].isin(batch)].iterrows():
+            code = str(stock["code"])
+            ticker = stock["ticker"]
+            try:
+                if len(batch) == 1:
+                    df = prices
+                else:
+                    if not hasattr(prices, "columns") or ticker not in prices.columns.levels[0]:
+                        continue
+                    df = prices[ticker]
             x = compute_indicators(df)
             if not x or x["vol5"] < min_vol * 1000:
                 continue
@@ -63,7 +76,7 @@ def scan_technical(stocks, min_vol, strategy_filter):
                 continue
             if strategy_filter == "只看回踩再上" and not x["recent_200_retest"]:
                 continue
-            rows.append({
+                rows.append({
                 "代號": code, "股票": stock["name"],
                 "技術分": round(technical_score(x), 1),
                 "收盤": round(x["close"], 2), "200MA": round(x["ma200"], 2),
@@ -72,9 +85,9 @@ def scan_technical(stocks, min_vol, strategy_filter):
                 "量比(5日/20日)": round(x["volume_ratio"], 2),
                 "5日均量(張)": round(x["vol5"] / 1000),
                 "策略": ", ".join(flags.keys())
-            })
-        except Exception:
-            continue
+                })
+            except Exception:
+                continue
     return pd.DataFrame(rows)
 
 stocks = get_stock_list()
@@ -104,8 +117,11 @@ if section == "🚀 200MA 即時量化篩選":
             get_prices.clear()
 
         try:
-            with st.spinner("正在掃描台股技術面資料..."):
-                result = scan_technical(stocks, min_vol, strategy_filter)
+            progress_slot = st.empty()
+            progress_bar = st.progress(0, text="準備掃描 200MA...")
+            result = scan_technical(stocks, min_vol, strategy_filter, progress_slot, progress_bar)
+            progress_bar.empty()
+            progress_slot.success("🟢 200MA 掃描完成")
 
             if result.empty:
                 st.warning("目前沒有符合條件的標的。可把「200MA策略」設為「全部」確認資料正常。")
