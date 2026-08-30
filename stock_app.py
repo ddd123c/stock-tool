@@ -41,14 +41,18 @@ def scan_technical(stocks, min_vol, strategy_filter, progress_slot=None, progres
     batch_size = 100
     batches = [tickers[i:i + batch_size] for i in range(0, len(tickers), batch_size)]
     total = len(batches)
+
     for batch_no, batch in enumerate(batches, start=1):
         if progress_slot is not None:
             progress_slot.markdown(f":green[🟢 正在掃描第 {batch_no}/{total} 批資料...]")
         if progress_bar is not None:
             progress_bar.progress(batch_no / total, text=f"200MA 掃描進度：{batch_no}/{total} 批")
+
         try:
-            prices = yf.download(tuple(batch), period="1y", group_by="ticker",
-                                 auto_adjust=False, progress=False, threads=True)
+            prices = yf.download(
+                tuple(batch), period="1y", group_by="ticker",
+                auto_adjust=False, progress=False, threads=True
+            )
         except Exception:
             continue
 
@@ -62,32 +66,38 @@ def scan_technical(stocks, min_vol, strategy_filter, progress_slot=None, progres
                     if not hasattr(prices, "columns") or ticker not in prices.columns.levels[0]:
                         continue
                     df = prices[ticker]
-            x = compute_indicators(df)
-            if not x or x["vol5"] < min_vol * 1000:
-                continue
-            # 200MA 入選：最近 5 個交易日內曾由下往上突破 200MA。
-            # 今天、第 1～5 個交易日內突破都保留；第 6 天起才排除。
-            if not x.get("recent_200_breakout", False):
-                continue
-            flags = strategy_flags(x)
-            if strategy_filter == "只看今日突破" and not x["crossed_up_200"]:
-                continue
-            if strategy_filter == "只看近5日突破" and not x["recent_200_breakout"]:
-                continue
-            if strategy_filter == "只看回踩再上" and not x["recent_200_retest"]:
-                continue
+
+                x = compute_indicators(df)
+                if not x or x["vol5"] < min_vol * 1000:
+                    continue
+
+                # 只保留最近 5 個交易日內由下往上突破 200MA 的標的。
+                if not x.get("recent_200_breakout", False):
+                    continue
+                if strategy_filter == "只看今日突破" and not x["crossed_up_200"]:
+                    continue
+                if strategy_filter == "只看近5日突破" and not x["recent_200_breakout"]:
+                    continue
+                if strategy_filter == "只看回踩再上" and not x["recent_200_retest"]:
+                    continue
+
+                flags = strategy_flags(x)
                 rows.append({
-                "代號": code, "股票": stock["name"],
-                "技術分": round(technical_score(x), 1),
-                "收盤": round(x["close"], 2), "200MA": round(x["ma200"], 2),
-                "200MA狀態": x["breakout_type"], "站上200MA天數": x["above200_run"],
-                "200MA斜率20D%": round(x["ma200_slope20"] * 100, 2),
-                "量比(5日/20日)": round(x["volume_ratio"], 2),
-                "5日均量(張)": round(x["vol5"] / 1000),
-                "策略": ", ".join(flags.keys())
+                    "代號": code,
+                    "股票": stock["name"],
+                    "技術分": round(technical_score(x), 1),
+                    "收盤": round(x["close"], 2),
+                    "200MA": round(x["ma200"], 2),
+                    "200MA狀態": x["breakout_type"],
+                    "站上200MA天數": x["above200_run"],
+                    "200MA斜率20D%": round(x["ma200_slope20"] * 100, 2),
+                    "量比(5日/20日)": round(x["volume_ratio"], 2),
+                    "5日均量(張)": round(x["vol5"] / 1000),
+                    "策略": ", ".join(flags.keys())
                 })
             except Exception:
                 continue
+
     return pd.DataFrame(rows)
 
 stocks = get_stock_list()
