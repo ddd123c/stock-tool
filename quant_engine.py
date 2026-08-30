@@ -71,12 +71,16 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dic
         return None
 
     if use_live:
-        live_series = pd.Series(
-            [float(v) for v in historical_close.tail(199)] + [float(live_price)]
+        # Keep the full historical series so prior 200MA values remain
+        # available for 5-day breakout detection and 20-day slope.
+        # Today's live price replaces today's partial daily close (if present).
+        analysis_close = pd.concat(
+            [historical_close.reset_index(drop=True),
+             pd.Series([float(live_price)])],
+            ignore_index=True
         )
-        analysis_close = live_series
     else:
-        analysis_close = close
+        analysis_close = close.reset_index(drop=True)
 
     if len(analysis_close) < 200:
         return None
