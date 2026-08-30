@@ -6,8 +6,8 @@ from chip_data import fetch_all_weekly_chip_rankings
 from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V2.8", layout="wide")
-st.title("📊 台股 Quant Screener V2.8")
+st.set_page_config(page_title="台股 Quant Screener V2.9", layout="wide")
+st.title("📊 台股 Quant Screener V2.9")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法人連買 ＋ 新聞報告")
 
 with st.sidebar:
@@ -24,18 +24,12 @@ def get_stock_list():
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_history_prices(tickers):
     """Cache daily history for 6 hours; split actions are kept for technical normalization."""
-    return yf.download(
-        list(tickers), period="1y", group_by="ticker",
-        auto_adjust=False, actions=True, progress=False, threads=True
-    )
+    return yf.download(list(tickers), period="1y", group_by="ticker", auto_adjust=False, actions=True, progress=False, threads=True)
 
 @st.cache_data(ttl=30, show_spinner=False)
 def get_live_prices(tickers):
     """Only fetch today's intraday prices; this is the fast part of the scan."""
-    return yf.download(
-        list(tickers), period="1d", interval="5m", group_by="ticker",
-        auto_adjust=False, progress=False, threads=True
-    )
+    return yf.download(list(tickers), period="1d", interval="5m", group_by="ticker", auto_adjust=False, progress=False, threads=True)
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _cached_institution_rankings(codes):
@@ -54,7 +48,7 @@ def scan_technical(stocks, min_vol, strategy_filter, progress_slot=None, progres
 
     for batch_no, batch in enumerate(batches, start=1):
         if progress_slot is not None:
-            progress_slot.markdown(f":green[🟢 正在掃描第 {batch_no}/{total} 批資料...]" )
+            progress_slot.markdown(f":green[🟢 正在掃描第 {batch_no}/{total} 批資料...]")
         if progress_bar is not None:
             progress_bar.progress(batch_no / total, text=f"200MA 掃描進度：{batch_no}/{total} 批")
 
@@ -77,8 +71,6 @@ def scan_technical(stocks, min_vol, strategy_filter, progress_slot=None, progres
                     df = history[ticker]
                     live_df = live[ticker] if hasattr(live, "columns") and ticker in live.columns.levels[0] else None
 
-                # During market hours use the latest intraday transaction.
-                # Before/after market, fall back to the latest completed daily close.
                 live_price = None
                 if live_df is not None and not live_df.empty and "Close" in live_df.columns:
                     s = pd.to_numeric(live_df["Close"], errors="coerce").dropna()
@@ -88,12 +80,8 @@ def scan_technical(stocks, min_vol, strategy_filter, progress_slot=None, progres
                 x = compute_indicators(df, live_price=live_price)
                 if not x or x["vol5"] < min_vol * 1000:
                     continue
-
-                # Never keep a stock that is currently below 200MA.
                 if not x.get("above200", False):
                     continue
-
-                # Keep only breakouts within the last 5 completed/current trading sessions.
                 if not x.get("recent_200_breakout", False):
                     continue
                 if strategy_filter == "只看今日突破" and not x["crossed_up_200"]:
@@ -105,17 +93,12 @@ def scan_technical(stocks, min_vol, strategy_filter, progress_slot=None, progres
 
                 flags = strategy_flags(x)
                 rows.append({
-                    "代號": code,
-                    "股票": stock["name"],
-                    "技術分": round(technical_score(x), 1),
-                    "收盤": round(x["close"], 2),
-                    "200MA": round(x["ma200"], 2),
-                    "200MA狀態": x["breakout_type"],
-                    "站上200MA天數": x["above200_run"],
+                    "代號": code, "股票": stock["name"], "技術分": round(technical_score(x), 1),
+                    "收盤": round(x["close"], 2), "200MA": round(x["ma200"], 2),
+                    "200MA狀態": x["breakout_type"], "站上200MA天數": x["above200_run"],
                     "200MA斜率20D%": round(x["ma200_slope20"] * 100, 2),
                     "量比(5日/20日)": round(x["volume_ratio"], 2),
-                    "5日均量(張)": round(x["vol5"] / 1000),
-                    "策略": ", ".join(flags.keys())
+                    "5日均量(張)": round(x["vol5"] / 1000), "策略": ", ".join(flags.keys())
                 })
             except Exception:
                 continue
@@ -128,12 +111,7 @@ if universe == "手動輸入":
     stocks = stocks[stocks["code"].isin(wanted)].copy()
 stocks["ticker"] = stocks["code"].map(lambda x: f"{x}.TW")
 
-section = st.radio(
-    "功能",
-    ["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東", "🏦 法人連續買超", "📰 新聞報告"],
-    horizontal=True,
-    label_visibility="collapsed",
-)
+section = st.radio("功能", ["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東", "🏦 法人連續買超", "📰 新聞報告"], horizontal=True, label_visibility="collapsed")
 
 if section == "🚀 200MA 即時量化篩選":
     def _technical_live_panel():
@@ -146,32 +124,25 @@ if section == "🚀 200MA 即時量化篩選":
         if manual_scan:
             get_history_prices.clear()
             get_live_prices.clear()
-
         try:
             progress_slot = st.empty()
             progress_bar = st.progress(0, text="準備掃描 200MA...")
             result = scan_technical(stocks, min_vol, strategy_filter, progress_slot, progress_bar)
             progress_bar.empty()
             progress_slot.success("🟢 200MA 掃描完成")
-
             if result.empty:
                 st.warning("目前沒有符合條件的標的。可把「200MA策略」設為「全部」確認資料正常。")
             else:
                 result = result.sort_values("技術分", ascending=False)
                 st.success(f"找到 {len(result)} 檔符合 200MA 技術條件的標的")
-                display_cols = [
-                    "代號","股票","技術分","200MA狀態","站上200MA天數",
-                    "收盤","200MA","量比(5日/20日)","200MA斜率20D%","策略"
-                ]
+                display_cols = ["代號","股票","技術分","200MA狀態","站上200MA天數","收盤","200MA","量比(5日/20日)","200MA斜率20D%","策略"]
                 st.dataframe(result[display_cols], use_container_width=True, hide_index=True)
                 st.subheader("🏆 Top 20")
                 st.dataframe(result[display_cols].head(20), use_container_width=True, hide_index=True)
                 st.caption("200MA 頁面完全獨立，只使用價格/成交量資料；法人與大戶不會在這裡抓取，也不參與 200MA 篩選或技術分。")
         except Exception as e:
             st.error(f"技術掃描失敗：{e}")
-
     _technical_live_panel()
-
 elif section == "📈 神秘金字塔｜每週大股東":
     st.info("這一頁專門看神秘金字塔每週籌碼：一次抓全部股票，再分成「增加最多 Top 20」與「減少最多 Top 20」。")
     if st.button("📈 更新本週大股東排行", type="primary"):
@@ -179,8 +150,7 @@ elif section == "📈 神秘金字塔｜每週大股東":
         try:
             with st.spinner("正在抓取神秘金字塔全部股票的最新一週籌碼..."):
                 chip = _cached_chip_rankings()
-            if chip.empty:
-                st.warning("沒有抓到資料。")
+            if chip.empty: st.warning("沒有抓到資料。")
             else:
                 latest = chip["資料週"].iloc[0].strftime("%Y/%m/%d") if hasattr(chip["資料週"].iloc[0], "strftime") else str(chip["資料週"].iloc[0])
                 st.success(f"共取得 {len(chip)} 檔股票｜最新資料週：{latest}")
@@ -188,66 +158,43 @@ elif section == "📈 神秘金字塔｜每週大股東":
                 dec = chip.sort_values("大股東週增減%", ascending=True).head(20)
                 left, right = st.columns(2)
                 with left:
-                    st.subheader("🟢 大股東增加最多 Top 20")
-                    st.dataframe(inc, use_container_width=True, hide_index=True)
+                    st.subheader("🟢 大股東增加最多 Top 20"); st.dataframe(inc, use_container_width=True, hide_index=True)
                 with right:
-                    st.subheader("🔴 大股東減少最多 Top 20")
-                    st.dataframe(dec, use_container_width=True, hide_index=True)
+                    st.subheader("🔴 大股東減少最多 Top 20"); st.dataframe(dec, use_container_width=True, hide_index=True)
                 st.caption("排名依神秘金字塔最新一週「>400張大股東持有張數增減率」排序；增加與減少各取 20 檔。")
-        except Exception as e:
-            st.error(f"抓取失敗：{e}")
-
+        except Exception as e: st.error(f"抓取失敗：{e}")
 elif section == "🏦 法人連續買超":
     st.info("外資、投信、自營商分開計算。只要任一法人目前連續買超 ≥ 3 個交易日就上榜；各法人遇到非買超日就重新計算。")
     st.caption("🖐️ 手動更新：只有按下「更新法人排行」才會重新抓資料。")
     update_inst = st.button("🏦 更新法人排行", type="primary", key="update_institution")
-    if update_inst:
-        _cached_institution_rankings.clear()
+    if update_inst: _cached_institution_rankings.clear()
     if update_inst:
         try:
             with st.spinner("正在更新全台股法人買賣超資料..."):
                 codes = stocks["code"].astype(str).tolist()
                 inst = _cached_institution_rankings(tuple(codes))
-                show = stocks[["code", "name"]].copy().rename(columns={"code":"代號","name":"股票"})
-                show = show.merge(inst, on="代號", how="left")
-                for col in ["外資連買天數","投信連買天數","自營商連買天數"]:
-                    show[col] = show[col].fillna(0).astype(int)
-
-                show = show[
-                    (show["外資連買天數"] >= 3) |
-                    (show["投信連買天數"] >= 3) |
-                    (show["自營商連買天數"] >= 3)
-                ].copy()
+                show = stocks[["code","name"]].copy().rename(columns={"code":"代號","name":"股票"}).merge(inst, on="代號", how="left")
+                for col in ["外資連買天數","投信連買天數","自營商連買天數"]: show[col] = show[col].fillna(0).astype(int)
+                show = show[(show["外資連買天數"] >= 3) | (show["投信連買天數"] >= 3) | (show["自營商連買天數"] >= 3)].copy()
                 show["最強連買"] = show[["外資連買天數","投信連買天數","自營商連買天數"]].max(axis=1)
-                show = show.sort_values(
-                    ["最強連買","外資連買天數","投信連買天數","自營商連買天數"],
-                    ascending=False
-                )
-
+                show = show.sort_values(["最強連買","外資連買天數","投信連買天數","自營商連買天數"], ascending=False)
                 st.success(f"目前有 {len(show)} 檔股票至少一種法人連續買超 ≥ 3 日")
-                display_cols = [
-                    "代號","股票","外資連買天數","投信連買天數","自營商連買天數","最強連買",
-                    "外資5日累計(張)","投信5日累計(張)","自營商5日累計(張)"
-                ]
+                display_cols = ["代號","股票","外資連買天數","投信連買天數","自營商連買天數","最強連買","外資5日累計(張)","投信5日累計(張)","自營商5日累計(張)"]
                 st.dataframe(show[display_cols], use_container_width=True, hide_index=True)
                 st.caption("例如：外資 5 日、投信 0 日，仍會上榜；外資與投信絕不合併計算。")
-        except Exception as e:
-            st.error(f"法人資料更新失敗：{e}")
-
+        except Exception as e: st.error(f"法人資料更新失敗：{e}")
 else:
     st.info("📰 新聞報告獨立於量化篩選。輸入代號後抓 Yahoo Finance 最新新聞，整理成「事件 → 可能影響 → 觀察重點」的小作文。")
     news_code = st.text_input("股票代號", value="2330", key="news_code")
     news_count = st.slider("新聞數量", 3, 10, 5, key="news_count")
     if st.button("📰 產生新聞報告", type="primary", key="news_report"):
         code = news_code.strip().replace(".TW","").replace(".TWO","")
-        if not code.isdigit():
-            st.error("請輸入純數字台股代號，例如 2330。")
+        if not code.isdigit(): st.error("請輸入純數字台股代號，例如 2330。")
         else:
             try:
                 with st.spinner("正在抓取最新新聞..."):
                     items = yf.Ticker(f"{code}.TW").news[:news_count]
-                if not items:
-                    st.warning("目前沒有抓到新聞。")
+                if not items: st.warning("目前沒有抓到新聞。")
                 else:
                     headlines = []
                     for item in items:
@@ -255,17 +202,10 @@ else:
                         title = content.get("title") or item.get("title") or "未命名新聞"
                         publisher = content.get("provider", {}).get("displayName") or item.get("publisher") or ""
                         pub = content.get("pubDate") or item.get("providerPublishTime")
-                        headlines.append((title, publisher, pub))
+                        headlines.append((title,publisher,pub))
                     st.subheader(f"📝 {code} 新聞小作文")
-                    st.write(
-                        f"近期新聞焦點主要集中在「{headlines[0][0]}」等事件。"
-                        "從目前標題可先觀察公司基本面、產業需求、訂單/產品進度與市場預期是否出現變化。"
-                        "新聞本身不代表股價必然上漲或下跌，建議搭配 200MA 趨勢、成交量與法人籌碼交叉確認。"
-                    )
+                    st.write(f"近期新聞焦點主要集中在「{headlines[0][0]}」等事件。從目前標題可先觀察公司基本面、產業需求、訂單/產品進度與市場預期是否出現變化。新聞本身不代表股價必然上漲或下跌，建議搭配 200MA 趨勢、成交量與法人籌碼交叉確認。")
                     st.subheader("🗞️ 原始新聞")
-                    for title, publisher, pub in headlines:
-                        st.markdown(f"- **{title}**  {publisher}")
-            except Exception as e:
-                st.error(f"新聞抓取失敗：{e}")
-
+                    for title,publisher,pub in headlines: st.markdown(f"- **{title}**  {publisher}")
+            except Exception as e: st.error(f"新聞抓取失敗：{e}")
 st.caption("台股代號來源：tw_stocks.csv｜技術資料：Yahoo Finance｜法人資料：TWSE / TPEx｜週籌碼：神秘金字塔")
