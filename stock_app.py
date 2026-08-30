@@ -2,14 +2,13 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import plotly.express as px
-from chip_data import fetch_stock_weekly, chip_features, fetch_all_weekly_chip_rankings
+from chip_data import fetch_all_weekly_chip_rankings
 from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V2.6", layout="wide")
-st.title("📊 台股 Quant Screener V2.6")
-st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東籌碼（兩個獨立功能）")
+st.set_page_config(page_title="台股 Quant Screener V2.7", layout="wide")
+st.title("📊 台股 Quant Screener V2.7")
+st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法人連買 ＋ 新聞報告")
 
 with st.sidebar:
     st.header("⚙️ 200MA 掃描設定")
@@ -22,14 +21,19 @@ with st.sidebar:
 def get_stock_list():
     return pd.read_csv("tw_stocks.csv", dtype={"code": str})
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_prices(tickers):
-    return yf.download(list(tickers), period="2y", group_by="ticker",
+    # 1 年資料已足夠計算 200MA、20D斜率與近5日突破，減少首次掃描下載量。
+    return yf.download(list(tickers), period="1y", group_by="ticker",
                        auto_adjust=False, progress=False, threads=True)
 
-@st.cache_data(ttl=1800)
-def get_chip_weekly(code, weeks=12):
-    return fetch_stock_weekly(code, weeks)
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_institution_rankings(codes):
+    return get_institution_streaks(list(codes), lookback_days=45)
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cached_chip_rankings():
+    return fetch_all_weekly_chip_rankings()
 
 def scan_technical(stocks, min_vol, strategy_filter):
     tickers = stocks["ticker"].tolist()
@@ -51,7 +55,6 @@ def scan_technical(stocks, min_vol, strategy_filter):
             flags = strategy_flags(x)
             if not flags:
                 continue
-            # 只保留剛站上 200MA 的標的：站上時間不得超過 5 個交易日。
             if x["above200_run"] > 5:
                 continue
             if strategy_filter == "只看今日突破" and not x["crossed_up_200"]:
@@ -74,27 +77,30 @@ def scan_technical(stocks, min_vol, strategy_filter):
             continue
     return pd.DataFrame(rows)
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def _cached_institution_rankings(codes):
-    return get_institution_streaks(list(codes), lookback_days=45)
-
 stocks = get_stock_list()
 if universe == "手動輸入":
     wanted = {x.strip() for x in codes_text.split(",") if x.strip()}
     stocks = stocks[stocks["code"].isin(wanted)].copy()
 stocks["ticker"] = stocks["code"].map(lambda x: f"{x}.TW")
 
-tab1, tab2, tab3, tab4 = st.tabs(["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東", "🏦 法人連續買超", "📰 新聞報告"])
+# 使用水平選單取代 st.tabs：Streamlit 的 tabs 會讓所有分頁一起執行，
+# 造成一開網頁就同時抓 Yahoo、法人、週籌碼；水平選單只執行目前功能，速度會快很多。
+section = st.radio(
+    "功能",
+    ["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東", "🏦 法人連續買超", "📰 新聞報告"],
+    horizontal=True,
+    label_visibility="collapsed",
+)
 
-with tab1:
+if section == "🚀 200MA 即時量化篩選":
     @st.fragment(run_every="5m")
     def _technical_live_panel():
-        st.info("這一頁專注技術面：只保留站上 200MA 不超過 5 個交易日的標的。開啟後會自動掃描；也可按「🔄 立即掃描」。")
+        st.info("這一頁專注技術面：只保留站上 200MA 不超過 5 個交易日的標的。開啟後每 5 分鐘自動掃描，也可按「🔄 立即掃描」。")
         c1, c2 = st.columns([1, 4])
         with c1:
             manual_scan = st.button("🔄 立即掃描", type="primary", key="technical_manual_scan")
         with c2:
-            st.caption("⚡ 自動掃描：每 5 分鐘｜手動按鈕：立即重新抓取")
+            st.caption("⚡ 自動掃描：每 5 分鐘｜手動按鈕：立即重新抓取價格")
         if manual_scan:
             get_prices.clear()
 
@@ -108,7 +114,8 @@ with tab1:
                 codes = result["代號"].astype(str).tolist()
                 with st.spinner("正在補上法人連買與本週大戶變化..."):
                     try:
-                        inst = get_institution_streaks(codes)
+                        # 使用 30 分鐘快取，不再每 5 分鐘重新抓法人。
+                        inst = _cached_institution_rankings(tuple(codes))
                         result = result.merge(inst, on="代號", how="left")
                     except Exception:
                         for col in ["法人連買天數","外資連買天數","投信連買天數","自營商連買天數"]:
@@ -116,7 +123,8 @@ with tab1:
                         for col in ["外資5日累計(張)","投信5日累計(張)","自營商5日累計(張)"]:
                             result[col] = 0.0
                     try:
-                        chip = fetch_all_weekly_chip_rankings()
+                        # 週大戶資料 30 分鐘快取，不再每次技術掃描重新抓。
+                        chip = _cached_chip_rankings()
                         chip = chip[["代號", "大股東週增減%"]].drop_duplicates("代號")
                         result = result.merge(chip, on="代號", how="left")
                     except Exception:
@@ -131,13 +139,17 @@ with tab1:
                     return "🔥 " + "＋".join(parts) if parts else "—"
 
                 result["法人標記"] = result.apply(_institution_label, axis=1)
-                result["大戶週籌碼"] = result["大股東週增減%"].apply(lambda v: "—" if pd.isna(v) else f"{v:+.2f}%")
+                result["大戶週籌碼"] = result["大股東週增減%"].apply(
+                    lambda v: "—" if pd.isna(v) else f"{v:+.2f}%"
+                )
                 result = result.sort_values("技術分", ascending=False)
 
                 st.success(f"找到 {len(result)} 檔符合 200MA 技術條件的標的")
-                display_cols = ["代號","股票","技術分","200MA狀態","站上200MA天數",
-                                "法人標記","外資連買天數","投信連買天數","自營商連買天數","大戶週籌碼",
-                                "收盤","200MA","量比(5日/20日)","200MA斜率20D%","策略"]
+                display_cols = [
+                    "代號","股票","技術分","200MA狀態","站上200MA天數",
+                    "法人標記","外資連買天數","投信連買天數","自營商連買天數","大戶週籌碼",
+                    "收盤","200MA","量比(5日/20日)","200MA斜率20D%","策略"
+                ]
                 st.dataframe(result[display_cols], use_container_width=True, hide_index=True)
                 st.subheader("🏆 Top 20")
                 st.dataframe(result[display_cols].head(20), use_container_width=True, hide_index=True)
@@ -147,12 +159,13 @@ with tab1:
 
     _technical_live_panel()
 
-with tab2:
-    st.info("這一頁專門看神秘金字塔每週籌碼：一次抓全部股票，再分成「增加最多 Top 20」與「減少最多 Top 20」。不與 200MA 即時篩選混在一起。")
+elif section == "📈 神秘金字塔｜每週大股東":
+    st.info("這一頁專門看神秘金字塔每週籌碼：一次抓全部股票，再分成「增加最多 Top 20」與「減少最多 Top 20」。")
     if st.button("📈 更新本週大股東排行", type="primary"):
+        _cached_chip_rankings.clear()
         try:
             with st.spinner("正在抓取神秘金字塔全部股票的最新一週籌碼..."):
-                chip = fetch_all_weekly_chip_rankings()
+                chip = _cached_chip_rankings()
             if chip.empty:
                 st.warning("沒有抓到資料。")
             else:
@@ -171,28 +184,41 @@ with tab2:
         except Exception as e:
             st.error(f"抓取失敗：{e}")
 
-with tab3:
-    st.info("法人功能獨立於 200MA：外資＋投信＋自營商合計連續買超 ≥ 3 個交易日就上榜；只要出現法人合計非買超日就重新計算。")
+elif section == "🏦 法人連續買超":
+    st.info("外資、投信、自營商分開計算。只要任一法人目前連續買超 ≥ 3 個交易日就上榜；各法人遇到非買超日就重新計算。")
+    st.caption("這一頁只在你切換進來時才執行，避免開網頁時拖慢 200MA。資料快取 30 分鐘。")
     try:
-        st.caption("開啟網頁時自動更新；資料快取 30 分鐘，避免每次畫面互動都重新抓全市場。")
         with st.spinner("正在更新全台股法人買賣超資料..."):
             codes = stocks["code"].astype(str).tolist()
             inst = _cached_institution_rankings(tuple(codes))
             show = stocks[["code", "name"]].copy().rename(columns={"code":"代號","name":"股票"})
             show = show.merge(inst, on="代號", how="left")
-            show["法人連買天數"] = show["法人連買天數"].fillna(0).astype(int)
-            show = show[show["法人連買天數"] >= 3].sort_values(
-                ["法人連買天數","外資連買天數","投信連買天數"], ascending=False
-            )
-            st.success(f"目前有 {len(show)} 檔股票符合「法人連續買超 ≥ 3 日」")
-            display_cols = ["代號","股票","法人連買天數","外資連買天數","投信連買天數","自營商連買天數",
-                            "外資5日累計(張)","投信5日累計(張)","自營商5日累計(張)"]
-            st.dataframe(show[display_cols], use_container_width=True, hide_index=True)
-            st.caption("「法人連買天數」以三大法人每日買賣超合計判定。")
-    except Exception as e:
-        st.error(f"自動更新失敗：{e}")
+            for col in ["外資連買天數","投信連買天數","自營商連買天數"]:
+                show[col] = show[col].fillna(0).astype(int)
 
-with tab4:
+            # 不再用「三大法人合計」判定，三種法人完全分開。
+            show = show[
+                (show["外資連買天數"] >= 3) |
+                (show["投信連買天數"] >= 3) |
+                (show["自營商連買天數"] >= 3)
+            ].copy()
+            show["最強連買"] = show[["外資連買天數","投信連買天數","自營商連買天數"]].max(axis=1)
+            show = show.sort_values(
+                ["最強連買","外資連買天數","投信連買天數","自營商連買天數"],
+                ascending=False
+            )
+
+            st.success(f"目前有 {len(show)} 檔股票至少一種法人連續買超 ≥ 3 日")
+            display_cols = [
+                "代號","股票","外資連買天數","投信連買天數","自營商連買天數","最強連買",
+                "外資5日累計(張)","投信5日累計(張)","自營商5日累計(張)"
+            ]
+            st.dataframe(show[display_cols], use_container_width=True, hide_index=True)
+            st.caption("例如：外資 5 日、投信 0 日，仍會上榜；外資與投信絕不合併計算。")
+    except Exception as e:
+        st.error(f"法人資料更新失敗：{e}")
+
+else:
     st.info("📰 新聞報告獨立於量化篩選。輸入代號後抓 Yahoo Finance 最新新聞，整理成「事件 → 可能影響 → 觀察重點」的小作文。")
     news_code = st.text_input("股票代號", value="2330", key="news_code")
     news_count = st.slider("新聞數量", 3, 10, 5, key="news_count")
@@ -227,22 +253,3 @@ with tab4:
                 st.error(f"新聞抓取失敗：{e}")
 
 st.caption("台股代號來源：tw_stocks.csv｜技術資料：Yahoo Finance｜法人資料：TWSE / TPEx｜週籌碼：神秘金字塔")
-
-
-with tab3:
-    st.info("這一頁專門看法人合計連續買超：外資＋投信＋自營商每日買賣超合計。連續買超超過 2 個交易日（≥3 日）就上榜；只要轉為法人合計賣超即重新計算。")
-    try:
-        st.caption("開啟網頁時自動更新；同一個資料快取 30 分鐘，避免每次畫面互動都重新抓取全市場。")
-        with st.spinner("正在自動更新全台股法人買賣超資料..."):
-            codes = stocks["code"].astype(str).tolist()
-            inst = _cached_institution_rankings(tuple(codes))
-            show = stocks[["code", "name"]].copy().rename(columns={"code":"代號","name":"股票"})
-            show = show.merge(inst, on="代號", how="left")
-            show["法人連買天數"] = show["法人連買天數"].fillna(0).astype(int)
-            show = show[show["法人連買天數"] >= 3].sort_values(["法人連買天數","外資連買天數","投信連買天數"], ascending=False)
-            st.success(f"目前有 {len(show)} 檔股票符合「法人連續買超 ≥ 3 日」")
-            display_cols = ["代號","股票","法人連買天數","外資連買天數","投信連買天數","自營商連買天數","外資5日累計(張)","投信5日累計(張)","自營商5日累計(張)"]
-            st.dataframe(show[display_cols], use_container_width=True, hide_index=True)
-            st.caption("「法人連買天數」以外資＋投信＋自營商每日買賣超合計判定；連買期間只要出現非買超日即歸零重新計算。")
-    except Exception as e:
-        st.error(f"自動更新失敗：{e}")
