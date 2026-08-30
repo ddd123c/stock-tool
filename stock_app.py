@@ -3,10 +3,10 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.express as px
-from chip_data import fetch_stock_weekly, chip_features
+from chip_data import fetch_stock_weekly, chip_features, fetch_all_weekly_chip_rankings
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V2.4", layout="wide")
+st.set_page_config(page_title="台股 Quant Screener V2.5", layout="wide")
 st.title("📊 台股 Quant Screener V2.4")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東籌碼（兩個獨立功能）")
 
@@ -96,29 +96,25 @@ with tab1:
                 st.dataframe(result.head(20), use_container_width=True, hide_index=True)
                 st.caption("技術資料：Yahoo Finance。此頁不等待神秘金字塔週資料，因此兩個功能彼此獨立。")
 
+
 with tab2:
-    st.info("這一頁專門看神秘金字塔的每週籌碼。資料更新週期與網站同步，不會影響 200MA 即時技術篩選。")
-    code = st.text_input("輸入台股代號", "2330")
-    weeks = st.slider("顯示最近幾週", 4, 12, 12)
-    if st.button("📈 查詢大股東週籌碼"):
+    st.info("這一頁專門看神秘金字塔每週籌碼：一次抓全部股票，再分成「增加最多 Top 20」與「減少最多 Top 20」。不與 200MA 即時篩選混在一起。")
+    if st.button("📈 更新本週大股東排行", type="primary"):
         try:
-            weekly = get_chip_weekly(code, weeks)
-            cf = chip_features(weekly)
-            st.success(f"{code} 共取得 {len(weekly)} 週資料")
-            st.dataframe(weekly.sort_values("date", ascending=False), use_container_width=True, hide_index=True)
-            if not weekly.empty:
-                chart = weekly.sort_values("date")
-                fig = px.line(chart, x="date", y="holder_pct", markers=True,
-                              title=f"{code}｜>400張大股東持有比例")
-                fig.update_yaxes(title="持有比例 (%)")
-                fig.update_xaxes(title="日期")
-                st.plotly_chart(fig, use_container_width=True)
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("本週持有比例", f"{cf['chip_now']:.2f}%" if cf["chip_now"] is not None else "—")
-            c2.metric("1週變化", f"{cf['chip_1w']:+.2f} 個百分點" if cf["chip_1w"] is not None else "—")
-            c3.metric("4週變化", f"{cf['chip_4w']:+.2f} 個百分點" if cf["chip_4w"] is not None else "—")
-            c4.metric("8週變化", f"{cf['chip_8w']:+.2f} 個百分點" if cf["chip_8w"] is not None else "—")
-            st.caption("籌碼定義：神秘金字塔 >400 張大股東持有比例。")
+            with st.spinner("正在抓取神秘金字塔全部股票的最新一週籌碼..."):
+                chip = fetch_all_weekly_chip_rankings()
+            latest = chip["資料週"].iloc[0].strftime("%Y/%m/%d")
+            st.success(f"共取得 {len(chip)} 檔股票｜最新資料週：{latest}")
+            inc = chip.sort_values("大股東週增減%", ascending=False).head(20)
+            dec = chip.sort_values("大股東週增減%", ascending=True).head(20)
+            left, right = st.columns(2)
+            with left:
+                st.subheader("🟢 大股東增加最多 Top 20")
+                st.dataframe(inc, use_container_width=True, hide_index=True)
+            with right:
+                st.subheader("🔴 大股東減少最多 Top 20")
+                st.dataframe(dec, use_container_width=True, hide_index=True)
+            st.caption("排名依神秘金字塔最新一週「>400張大股東持有張數增減率」排序；增加與減少各取 20 檔。")
         except Exception as e:
             st.error(f"抓取失敗：{e}")
 
