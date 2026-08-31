@@ -6,8 +6,8 @@ from chip_data import fetch_all_weekly_chip_rankings
 from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V3.7", layout="wide")
-st.title("📊 台股 Quant Screener V3.7")
+st.set_page_config(page_title="台股 Quant Screener V3.8", layout="wide")
+st.title("📊 台股 Quant Screener V3.8")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法人連續買超 ＋ 新聞報告")
 
 with st.sidebar:
@@ -23,7 +23,7 @@ def get_stock_list():
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_history_prices(tickers):
-    """Cache daily history for 6 hours; 200MA uses raw Close only (non-adjusted, matching 永豐非還原日)."""
+    """Cache daily history for 6 hours; 200MA uses Yahoo Finance Close only (non-adjusted)."""
     return yf.download(list(tickers), period="1y", group_by="ticker", auto_adjust=False, actions=True, progress=False, threads=True)
 
 @st.cache_data(ttl=30, show_spinner=False)
