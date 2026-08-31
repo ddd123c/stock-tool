@@ -68,7 +68,7 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dic
                     [historical_close.reset_index(drop=True),
                      pd.Series([live_price_value])],
                     ignore_index=True
-                )
+                ).tail(200).reset_index(drop=True)
         else:
             analysis_close = pd.Series([live_price_value], dtype=float)
     else:
