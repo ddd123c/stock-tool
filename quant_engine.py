@@ -33,28 +33,46 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dic
     if len(close) < 199:
         return None
 
-    # 即時 200MA：若 Yahoo 的日資料已包含今天，就用最新成交價「替換今天」，
-    # 絕不能把今天再 append 一次，否則 200MA 會偏離看盤軟體。
+    # 200MA 的核心規則：
+    # 1) 歷史資料只包含真正有交易的日子。
+    # 2) 交易日盤中：今天視為新的第 1 個交易日，用「前199個已完成交易日 + 今日最新價」。
+    # 3) 若 Yahoo 日線已經有今天的資料，就替換今天，不重複計算。
+    # 4) 非交易日沒有即時成交價，就完全不新增一天。
+    # 因此國定假日、週末、證交所休市/颱風休市都不會被算進 200 個交易日。
     use_live = live_price is not None
     historical_close = close.copy()
-    live_adjust_factor = 1.0
 
     if use_live:
-        live_adjusted_price = float(live_price) * live_adjust_factor
+        live_price_value = float(live_price)
         idx = historical_close.index
-        today = pd.Timestamp.now().normalize()
+        today = pd.Timestamp.now(tz="Asia/Taipei").normalize().tz_localize(None)
 
-        # 只把「實際存在於 Yahoo/TWSE 交易資料中的今天」視為交易日。
-        # 週六、週日、國定假日，以及因颱風等原因證交所休市的日期，
-        # 都不會出現在日線資料中，因此不能把 live_price 當成新交易日 append。
-        # 這也讓「近5日／5日／20日」全部以實際交易日資料計算。
-        if len(idx) > 0 and pd.Timestamp(idx[-1]).normalize() == today:
-            analysis_close = historical_close.iloc[:-1].reset_index(drop=True)
-            analysis_close = pd.concat([analysis_close, pd.Series([live_adjusted_price])], ignore_index=True)
+        if len(idx) > 0:
+            last_day = pd.Timestamp(idx[-1])
+            if last_day.tzinfo is not None:
+                last_day = last_day.tz_convert("Asia/Taipei").tz_localize(None)
+            else:
+                last_day = last_day.normalize()
+
+            if last_day == today:
+                # Yahoo 日線已經有今天：今天只保留一次，改成盤中最新價。
+                base = historical_close.iloc[:-1].reset_index(drop=True)
+                analysis_close = pd.concat(
+                    [base, pd.Series([live_price_value])],
+                    ignore_index=True
+                )
+            else:
+                # 今天有即時成交價，代表今天是實際交易日；Yahoo 日線尚未收盤，
+                # 所以今天要新增為第1個交易日。
+                analysis_close = pd.concat(
+                    [historical_close.reset_index(drop=True),
+                     pd.Series([live_price_value])],
+                    ignore_index=True
+                )
         else:
-            # 非交易日：完全忽略即時價，維持最近一個實際交易日。
-            analysis_close = historical_close.reset_index(drop=True)
+            analysis_close = pd.Series([live_price_value], dtype=float)
     else:
+        # 沒有即時成交價：不要假設今天有交易，維持最近一個實際交易日。
         analysis_close = historical_close.reset_index(drop=True)
 
     if len(analysis_close) < 200:
