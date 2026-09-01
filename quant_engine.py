@@ -9,7 +9,7 @@ MA_WINDOWS = (5, 10, 15, 20, 60, 200)
 def _num(s):
     return pd.to_numeric(s, errors="coerce")
 
-def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dict | None:
+def compute_indicators(df: pd.DataFrame, live_price: float | None = None, live_timestamp=None) -> dict | None:
     if df is None or df.empty:
         return None
     x = df.copy()
@@ -68,7 +68,7 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None) -> dic
                     [historical_close.reset_index(drop=True),
                      pd.Series([live_price_value])],
                     ignore_index=True
-                ).tail(200).reset_index(drop=True)
+                 )
         else:
             analysis_close = pd.Series([live_price_value], dtype=float)
     else:
