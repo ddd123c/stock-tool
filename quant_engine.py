@@ -30,68 +30,65 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None, live_t
     close = x["close_adjusted"]
     volume = x["volume"].fillna(0)
 
-    if len(close) < 199:
+    if len(close) < 200:
         return None
 
-    # 200MA 的核心規則：
-    # 1) 歷史資料只包含真正有交易的日子。
-    # 2) 交易日盤中：今天視為新的第 1 個交易日，用「前199個已完成交易日 + 今日最新價」。
-    # 3) 若 Yahoo 日線已經有今天的資料，就替換今天，不重複計算。
-    # 4) 非交易日沒有即時成交價，就完全不新增一天。
-    # 因此國定假日、週末、證交所休市/颱風休市都不會被算進 200 個交易日。
-    use_live = live_price is not None
-    historical_close = close.copy()
+    # 200MA 基準（對齊永豐看盤設定）：200 個「交易日」的原始收盤價 SMA。
+    #
+    # 重要：
+    # - 只使用 Yahoo Finance 的 Close，不使用 Adj Close。
+    # - 不把週末、國定假日、颱風休市等非交易日算進 200 天。
+    # - 每次手動掃描都重新取得最新日線，因此 200MA 會隨交易日更新。
+    # - 若今日已經有 Yahoo 日K資料，今日 Close 就是第 200 個交易日的值。
+    # - 若今日尚未形成日K，但有確認為「今天」的即時價格，才暫時以今日最新價作為今日 Close。
+    # - 若今天不是交易日，完全不加入 live price，直接使用上一個交易日的 Close。
+    historical_close = close.reset_index(drop=True).astype(float)
 
-    if use_live:
+    use_live = live_price is not None
+    live_is_today = False
+    today = pd.Timestamp.now(tz="Asia/Taipei").normalize().tz_localize(None)
+
+    if use_live and live_timestamp is not None:
+        lt = pd.Timestamp(live_timestamp)
+        if lt.tzinfo is not None:
+            lt = lt.tz_convert("Asia/Taipei").tz_localize(None)
+        else:
+            lt = lt.normalize()
+        live_is_today = lt.normalize() == today
+
+    if use_live and live_is_today:
         live_price_value = float(live_price)
 
-        # 只有即時資料的時間戳確認為今天，才把它當成今天的交易日。
-        # 這可避免週末/國定假日/颱風休市時，Yahoo 回傳上一交易日
-        # 的最後一筆5分鐘價格而被誤加進 200MA。
-        live_is_today = False
-        if live_timestamp is not None:
-            lt = pd.Timestamp(live_timestamp)
-            if lt.tzinfo is not None:
-                lt = lt.tz_convert("Asia/Taipei").tz_localize(None)
-            live_is_today = lt.normalize() == pd.Timestamp.now(tz="Asia/Taipei").normalize().tz_localize(None)
+        # 日線已有今天：替換最後一筆，避免把今天重複算兩次。
+        last_day = None
+        if len(x.index) > 0:
+            raw_last = pd.Timestamp(x.index[-1])
+            if raw_last.tzinfo is not None:
+                raw_last = raw_last.tz_convert("Asia/Taipei").tz_localize(None)
+            last_day = raw_last.normalize()
 
-        historical_close = historical_close.reset_index(drop=True)
-
-        if live_is_today:
-            idx = close.index
-            today = pd.Timestamp.now(tz="Asia/Taipei").normalize().tz_localize(None)
-
-            if len(idx) > 0:
-                last_day = pd.Timestamp(idx[-1])
-                if last_day.tzinfo is not None:
-                    last_day = last_day.tz_convert("Asia/Taipei").tz_localize(None)
-                else:
-                    last_day = last_day.normalize()
-
-                if last_day == today:
-                    # Yahoo 已有今日收盤資料：只替換今天，不重複增加。
-                    analysis_close = pd.concat(
-                        [historical_close.iloc[:-1], pd.Series([live_price_value])],
-                        ignore_index=True
-                    )
-                else:
-                    # Yahoo 尚未產生今日日K：今天是新的交易日，加入最新成交價。
-                    analysis_close = pd.concat(
-                        [historical_close, pd.Series([live_price_value])],
-                        ignore_index=True
-                    )
-            else:
-                analysis_close = pd.Series([live_price_value], dtype=float)
+        if last_day == today:
+            analysis_close = historical_close.copy()
+            analysis_close.iloc[-1] = live_price_value
         else:
-            # 非交易日或沒有可確認日期的即時資料：完全不加入 live price。
-            analysis_close = historical_close
+            # 今天尚未形成 Yahoo 日K，才新增今天這個交易日。
+            analysis_close = pd.concat(
+                [historical_close, pd.Series([live_price_value], dtype=float)],
+                ignore_index=True
+            )
     else:
-        analysis_close = historical_close.reset_index(drop=True)
+        # 非交易日：不新增任何資料。
+        analysis_close = historical_close.copy()
+
+    # 最終只取最近 200 個實際交易日。
+    # 這一行是 SMA 的核心，確保永遠是「200 個交易日」而不是 200 個日曆日。
+    analysis_close = analysis_close.dropna().tail(200).reset_index(drop=True)
 
     if len(analysis_close) < 200:
         return None
 
-    ma = {n: analysis_close.rolling(n).mean() for n in MA_WINDOWS}
+    # 永豐設定：200 / SMA / 收盤價
+    ma = {n: analysis_close.rolling(n, min_periods=n).mean() for n in MA_WINDOWS}
     m = {n: float(ma[n].iloc[-1]) for n in MA_WINDOWS}
     ma200 = ma[200]
     ma200_now = m[200]
