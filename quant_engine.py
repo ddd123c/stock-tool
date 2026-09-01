@@ -80,9 +80,9 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None, live_t
         # 非交易日：不新增任何資料。
         analysis_close = historical_close.copy()
 
-    # 最終只取最近 200 個實際交易日。
-    # 這一行是 SMA 的核心，確保永遠是「200 個交易日」而不是 200 個日曆日。
-    analysis_close = analysis_close.dropna().tail(200).reset_index(drop=True)
+    # 保留足夠的交易日做 200MA 以及 5D/20D 斜率比較；
+    # 最後一筆 200MA 永遠只平均最近 200 個實際交易日。
+    analysis_close = analysis_close.dropna().tail(260).reset_index(drop=True)
 
     if len(analysis_close) < 200:
         return None
