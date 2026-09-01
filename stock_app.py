@@ -6,8 +6,8 @@ from chip_data import fetch_all_weekly_chip_rankings
 from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V4.6", layout="wide")
-st.title("📊 台股 Quant Screener V4.6")
+st.set_page_config(page_title="台股 Quant Screener V4.7", layout="wide")
+st.title("📊 台股 Quant Screener V4.7")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法人連續買超 ＋ 新聞報告")
 
 with st.sidebar:
@@ -78,7 +78,7 @@ def scan_technical(stocks, min_vol, strategy_filter, progress_slot=None, progres
                 x = compute_indicators(df, live_price=live_price, live_timestamp=live_timestamp)
                 if not x or x["vol5"] < min_vol * 1000:
                     continue
-                if not x.get("above200", False):
+                if not x.get("recent_200_breakout", False):
                     continue
                 if strategy_filter == "只看今日突破" and not x["crossed_up_200"]:
                     continue
@@ -112,7 +112,7 @@ section = st.radio("功能", ["🚀 200MA 即時量化篩選", "📈 神秘金�
 
 if section == "🚀 200MA 即時量化篩選":
     def _technical_live_panel():
-        st.info("這一頁只抓技術價格資料，不抓法人、不抓大戶、不抓新聞。200MA 按永豐設定：200 個交易日、SMA、原始收盤價；「近5日突破」以突破當天為第1個交易日，第6個交易日開始移除。『全部』顯示目前站上 200MA 的標的；其他策略再依條件篩選。請手動按「🔄 立即掃描」更新。")
+        st.info("這一頁只抓技術價格資料，不抓法人、不抓大戶、不抓新聞。200MA 按永豐設定：200 個交易日、SMA、原始收盤價；「近5日突破」以突破當天為第1個交易日，第6個交易日開始移除。『全部』只顯示最近 5 個交易日內曾突破 200MA 的標的；突破滿第 6 個交易日即移除。其他策略再依條件篩選。請手動按「🔄 立即掃描」更新。")
         c1, c2 = st.columns([1, 4])
         with c1:
             manual_scan = st.button("🔄 立即掃描", type="primary", key="technical_manual_scan")
@@ -136,7 +136,7 @@ if section == "🚀 200MA 即時量化篩選":
                 st.dataframe(result[display_cols], use_container_width=True, hide_index=True)
                 st.subheader("🏆 Top 20")
                 st.dataframe(result[display_cols].head(20), use_container_width=True, hide_index=True)
-                st.caption("200MA 頁面完全獨立，只使用價格/成交量資料；法人與大戶不會在這裡抓取，也不參與 200MA 篩選或技術分。")
+                st.caption("200MA 頁面完全獨立，只使用價格/成交量資料；以最近 5 個實際交易日內的 200MA 向上突破為有效訊號，第 6 個交易日開始移除。法人與大戶不會在這裡抓取，也不參與 200MA 篩選或技術分。")
         except Exception as e:
             st.error(f"技術掃描失敗：{e}")
     _technical_live_panel()
