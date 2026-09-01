@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Technical indicators, 200MA breakout states and scoring for Quant Screener V2."""
+"""Technical indicators, 200MA breakout states and scoring for Quant Screener V4.5."""
 from __future__ import annotations
 import numpy as np
 import pandas as pd
@@ -125,8 +125,10 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None, live_t
     width = (upper - lower) / ma20 if ma20 else np.nan
     prev20high = float(analysis_close.iloc[-21:-1].max()) if len(analysis_close) >= 21 else np.nan
 
-    # 「近5日突破」定義：突破當天算第1個交易日，之後第2～第5個交易日仍保留。
-    # 因此只檢查最近 5 個實際交易日；第 6 個交易日開始就從「近5日突破」移除。
+    # 「近5日突破」定義：突破當天就是第1個交易日。
+    # 第2～第5個實際交易日仍保留；第6個實際交易日開始移除。
+    # analysis_close 只含 Yahoo 實際存在的日K交易日，因此週末、國定假日、
+    # 颱風停班停市等沒有日K的日期不會被算進這 5 天。
     recent_cross = False
     cross_days_ago = None
     breakout_day_number = None
