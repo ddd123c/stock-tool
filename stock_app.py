@@ -6,8 +6,8 @@ from chip_data import fetch_all_weekly_chip_rankings
 from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V4.5", layout="wide")
-st.title("📊 台股 Quant Screener V4.5")
+st.set_page_config(page_title="台股 Quant Screener V4.6", layout="wide")
+st.title("📊 台股 Quant Screener V4.6")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法人連續買超 ＋ 新聞報告")
 
 with st.sidebar:
@@ -92,6 +92,7 @@ def scan_technical(stocks, min_vol, strategy_filter, progress_slot=None, progres
                     "代號": code, "股票": stock["name"], "技術分": round(technical_score(x), 1),
                     "收盤": round(x["close"], 2), "200MA": round(x["ma200"], 2),
                     "200MA狀態": x["breakout_type"],
+                    "突破第幾天": (f"第{x[\"breakout_day_number\"]}天" if x.get("breakout_day_number") is not None else "—"),
                     "200MA斜率20D%": round(x["ma200_slope20"] * 100, 2),
                     "量比(5日/20日)": round(x["volume_ratio"], 2),
                     "5日均量(張)": round(x["vol5"] / 1000), "策略": ", ".join(flags.keys())
@@ -131,7 +132,7 @@ if section == "🚀 200MA 即時量化篩選":
             else:
                 result = result.sort_values("技術分", ascending=False)
                 st.success(f"找到 {len(result)} 檔符合 200MA 技術條件的標的")
-                display_cols = ["代號","股票","技術分","200MA狀態","收盤","200MA","量比(5日/20日)","200MA斜率20D%","策略"]
+                display_cols = ["代號","股票","技術分","200MA狀態","突破第幾天","收盤","200MA","量比(5日/20日)","200MA斜率20D%","策略"]
                 st.dataframe(result[display_cols], use_container_width=True, hide_index=True)
                 st.subheader("🏆 Top 20")
                 st.dataframe(result[display_cols].head(20), use_container_width=True, hide_index=True)
