@@ -44,35 +44,48 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None, live_t
 
     if use_live:
         live_price_value = float(live_price)
-        idx = historical_close.index
-        today = pd.Timestamp.now(tz="Asia/Taipei").normalize().tz_localize(None)
 
-        if len(idx) > 0:
-            last_day = pd.Timestamp(idx[-1])
-            if last_day.tzinfo is not None:
-                last_day = last_day.tz_convert("Asia/Taipei").tz_localize(None)
-            else:
-                last_day = last_day.normalize()
+        # 只有即時資料的時間戳確認為今天，才把它當成今天的交易日。
+        # 這可避免週末/國定假日/颱風休市時，Yahoo 回傳上一交易日
+        # 的最後一筆5分鐘價格而被誤加進 200MA。
+        live_is_today = False
+        if live_timestamp is not None:
+            lt = pd.Timestamp(live_timestamp)
+            if lt.tzinfo is not None:
+                lt = lt.tz_convert("Asia/Taipei").tz_localize(None)
+            live_is_today = lt.normalize() == pd.Timestamp.now(tz="Asia/Taipei").normalize().tz_localize(None)
 
-            if last_day == today:
-                # Yahoo 日線已經有今天：今天只保留一次，改成盤中最新價。
-                base = historical_close.iloc[:-1].reset_index(drop=True)
-                analysis_close = pd.concat(
-                    [base, pd.Series([live_price_value])],
-                    ignore_index=True
-                )
+        historical_close = historical_close.reset_index(drop=True)
+
+        if live_is_today:
+            idx = close.index
+            today = pd.Timestamp.now(tz="Asia/Taipei").normalize().tz_localize(None)
+
+            if len(idx) > 0:
+                last_day = pd.Timestamp(idx[-1])
+                if last_day.tzinfo is not None:
+                    last_day = last_day.tz_convert("Asia/Taipei").tz_localize(None)
+                else:
+                    last_day = last_day.normalize()
+
+                if last_day == today:
+                    # Yahoo 已有今日收盤資料：只替換今天，不重複增加。
+                    analysis_close = pd.concat(
+                        [historical_close.iloc[:-1], pd.Series([live_price_value])],
+                        ignore_index=True
+                    )
+                else:
+                    # Yahoo 尚未產生今日日K：今天是新的交易日，加入最新成交價。
+                    analysis_close = pd.concat(
+                        [historical_close, pd.Series([live_price_value])],
+                        ignore_index=True
+                    )
             else:
-                # 今天有即時成交價，代表今天是實際交易日；Yahoo 日線尚未收盤，
-                # 所以今天要新增為第1個交易日。
-                analysis_close = pd.concat(
-                    [historical_close.reset_index(drop=True),
-                     pd.Series([live_price_value])],
-                    ignore_index=True
-                 )
+                analysis_close = pd.Series([live_price_value], dtype=float)
         else:
-            analysis_close = pd.Series([live_price_value], dtype=float)
+            # 非交易日或沒有可確認日期的即時資料：完全不加入 live price。
+            analysis_close = historical_close
     else:
-        # 沒有即時成交價：不要假設今天有交易，維持最近一個實際交易日。
         analysis_close = historical_close.reset_index(drop=True)
 
     if len(analysis_close) < 200:
