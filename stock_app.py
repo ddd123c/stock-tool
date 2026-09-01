@@ -6,8 +6,8 @@ from chip_data import fetch_all_weekly_chip_rankings
 from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V4.3", layout="wide")
-st.title("📊 台股 Quant Screener V4.3")
+st.set_page_config(page_title="台股 Quant Screener V4.4", layout="wide")
+st.title("📊 台股 Quant Screener V4.4")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法人連續買超 ＋ 新聞報告")
 
 with st.sidebar:
@@ -80,8 +80,6 @@ def scan_technical(stocks, min_vol, strategy_filter, progress_slot=None, progres
                     continue
                 if not x.get("above200", False):
                     continue
-                if not x.get("recent_200_breakout", False):
-                    continue
                 if strategy_filter == "只看今日突破" and not x["crossed_up_200"]:
                     continue
                 if strategy_filter == "只看近5日突破" and not x["recent_200_breakout"]:
@@ -113,7 +111,7 @@ section = st.radio("功能", ["🚀 200MA 即時量化篩選", "📈 神秘金�
 
 if section == "🚀 200MA 即時量化篩選":
     def _technical_live_panel():
-        st.info("這一頁只抓技術價格資料，不抓法人、不抓大戶、不抓新聞。200MA 按永豐設定：200 個交易日、SMA、原始收盤價；只保留最近 5 個交易日內突破 200MA 的標的。請手動按「🔄 立即掃描」更新。")
+        st.info("這一頁只抓技術價格資料，不抓法人、不抓大戶、不抓新聞。200MA 按永豐設定：200 個交易日、SMA、原始收盤價。『全部』顯示目前站上 200MA 的標的；其他策略再依條件篩選。請手動按「🔄 立即掃描」更新。")
         c1, c2 = st.columns([1, 4])
         with c1:
             manual_scan = st.button("🔄 立即掃描", type="primary", key="technical_manual_scan")
