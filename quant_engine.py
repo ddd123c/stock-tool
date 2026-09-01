@@ -125,13 +125,17 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None, live_t
     width = (upper - lower) / ma20 if ma20 else np.nan
     prev20high = float(analysis_close.iloc[-21:-1].max()) if len(analysis_close) >= 21 else np.nan
 
+    # 「近5日突破」定義：突破當天算第1個交易日，之後第2～第5個交易日仍保留。
+    # 因此只檢查最近 5 個實際交易日；第 6 個交易日開始就從「近5日突破」移除。
     recent_cross = False
     cross_days_ago = None
+    breakout_day_number = None
     max_lookback = min(5, len(analysis_close) - 1)
     for i in range(1, max_lookback + 1):
         if analysis_close.iloc[-i-1] <= ma200.iloc[-i-1] and analysis_close.iloc[-i] > ma200.iloc[-i]:
             recent_cross = True
             cross_days_ago = i - 1
+            breakout_day_number = i
             break
 
     recent_retest = False
@@ -144,7 +148,7 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None, live_t
     if crossed_up:
         breakout_type = "今日突破200MA"
     elif recent_cross:
-        breakout_type = f"近5日突破200MA（{cross_days_ago}日前）"
+        breakout_type = f"近5日突破200MA（第{breakout_day_number}個交易日）"
     elif recent_retest and run >= 1:
         breakout_type = "200MA回踩後站回"
     elif current_above:
@@ -163,6 +167,7 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None, live_t
         "prev20high": prev20high, "above200": current_above,
         "above200_run": run, "crossed_up_200": bool(crossed_up), "crossed_down_200": bool(crossed_down),
         "recent_200_breakout": bool(recent_cross), "cross_days_ago": cross_days_ago,
+        "breakout_day_number": breakout_day_number,
         "recent_200_retest": bool(recent_retest), "breakout_type": breakout_type,
     }
 
