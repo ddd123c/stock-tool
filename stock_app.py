@@ -6,8 +6,8 @@ from chip_data import fetch_all_weekly_chip_rankings
 from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V4.1", layout="wide")
-st.title("📊 台股 Quant Screener V4.1")
+st.set_page_config(page_title="台股 Quant Screener V4.2", layout="wide")
+st.title("📊 台股 Quant Screener V4.2")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法人連續買超 ＋ 新聞報告")
 
 with st.sidebar:
@@ -23,8 +23,8 @@ def get_stock_list():
 
 @st.cache_data(ttl=21600, show_spinner=False)
 def get_history_prices(tickers):
-    """Cache daily history for 6 hours; 200MA uses Yahoo Finance Close only (non-adjusted)."""
-    return yf.download(list(tickers), period="1y", group_by="ticker", auto_adjust=False, actions=True, progress=False, threads=True)
+    """Daily trading history for 200SMA; raw Close only, never Adj Close."""
+    return yf.download(list(tickers), period="2y", group_by="ticker", auto_adjust=False, actions=True, progress=False, threads=True)
 
 @st.cache_data(ttl=30, show_spinner=False)
 def get_live_prices(tickers):
@@ -113,7 +113,7 @@ section = st.radio("功能", ["🚀 200MA 即時量化篩選", "📈 神秘金�
 
 if section == "🚀 200MA 即時量化篩選":
     def _technical_live_panel():
-        st.info("這一頁只抓技術價格資料，不抓法人、不抓大戶、不抓新聞。只保留最近 5 個交易日內突破 200MA 的標的；請手動按「🔄 立即掃描」更新。")
+        st.info("這一頁只抓技術價格資料，不抓法人、不抓大戶、不抓新聞。200MA 按永豐設定：200 個交易日、SMA、原始收盤價；只保留最近 5 個交易日內突破 200MA 的標的。請手動按「🔄 立即掃描」更新。")
         c1, c2 = st.columns([1, 4])
         with c1:
             manual_scan = st.button("🔄 立即掃描", type="primary", key="technical_manual_scan")
