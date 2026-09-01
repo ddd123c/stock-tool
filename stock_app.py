@@ -92,7 +92,7 @@ def scan_technical(stocks, min_vol, strategy_filter, progress_slot=None, progres
                     "代號": code, "股票": stock["name"], "技術分": round(technical_score(x), 1),
                     "收盤": round(x["close"], 2), "200MA": round(x["ma200"], 2),
                     "200MA狀態": x["breakout_type"],
-                    "突破第幾天": (f"第{x[\"breakout_day_number\"]}天" if x.get("breakout_day_number") is not None else "—"),
+                    "突破第幾天": (f"第{x['breakout_day_number']}天" if x.get("breakout_day_number") is not None else "—"),
                     "200MA斜率20D%": round(x["ma200_slope20"] * 100, 2),
                     "量比(5日/20日)": round(x["volume_ratio"], 2),
                     "5日均量(張)": round(x["vol5"] / 1000), "策略": ", ".join(flags.keys())
