@@ -6,8 +6,8 @@ from chip_data import fetch_all_weekly_chip_rankings
 from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 
-st.set_page_config(page_title="台股 Quant Screener V4.0", layout="wide")
-st.title("📊 台股 Quant Screener V4.0")
+st.set_page_config(page_title="台股 Quant Screener V4.1", layout="wide")
+st.title("📊 台股 Quant Screener V4.1")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法人連續買超 ＋ 新聞報告")
 
 with st.sidebar:
@@ -68,12 +68,14 @@ def scan_technical(stocks, min_vol, strategy_filter, progress_slot=None, progres
                     live_df = live[ticker] if hasattr(live, "columns") and ticker in live.columns.levels[0] else None
 
                 live_price = None
+                live_timestamp = None
                 if live_df is not None and not live_df.empty and "Close" in live_df.columns:
                     s = pd.to_numeric(live_df["Close"], errors="coerce").dropna()
                     if not s.empty:
                         live_price = float(s.iloc[-1])
+                        live_timestamp = s.index[-1]
 
-                x = compute_indicators(df, live_price=live_price)
+                x = compute_indicators(df, live_price=live_price, live_timestamp=live_timestamp)
                 if not x or x["vol5"] < min_vol * 1000:
                     continue
                 if not x.get("above200", False):
