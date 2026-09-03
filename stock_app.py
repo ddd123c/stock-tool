@@ -2,14 +2,15 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 from chip_data import fetch_all_weekly_chip_rankings
 from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 from quant_research import research_features, score_features
-from backtest import backtest_one, summarize_trades, benchmark_return
+from backtest import backtest_one, summarize_trades
 
-st.set_page_config(page_title="台股 Quant Screener V4.8", layout="wide")
-st.title("📊 台股 Quant Screener V4.8")
+st.set_page_config(page_title="台股 Quant Screener V4.9", layout="wide")
+st.title("📊 台股 Quant Screener V4.9")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法人連續買超 ＋ 新聞報告")
 
 with st.sidebar:
@@ -133,7 +134,7 @@ if section == "🔬 量化研究":
         else: st.warning("沒有足夠的研究資料。")
 
 elif section == "🧪 歷史回測":
-    st.info("回測只使用歷史 OHLCV。訊號在當日收盤後才成立，因此一律以「下一個交易日開盤」進場，持有 N 個完整交易日後以當日收盤出場，避免偷看未來資料。")
+    st.info("回測只使用歷史 OHLCV。訊號在當日收盤後才成立，因此一律以「下一個交易日開盤」進場，持有 N 個完整交易日後以當日收盤出場，避免偷看未來資料。回測開始日前會額外抓取約400個日曆日作為200MA暖機資料，但績效只統計指定期間內成立且完成的交易。")
     backtest_codes = st.text_input("回測股票代號（逗號分隔）", value="2330,2603,3017,3605,6446", key="backtest_codes")
     c1, c2 = st.columns(2)
     with c1:
@@ -156,9 +157,10 @@ elif section == "🧪 歷史回測":
             all_trades = []
             summaries = []
             progress = st.progress(0, text="準備下載歷史資料...")
+            warmup_start = pd.Timestamp(start_date) - pd.Timedelta(days=400)
             for n, code in enumerate(codes, start=1):
                 try:
-                    h = yf.download(f"{code}.TW", start=str(start_date), end=str(end_date + pd.Timedelta(days=1)), interval="1d", auto_adjust=False, actions=False, progress=False)
+                    h = yf.download(f"{code}.TW", start=str(warmup_start.date()), end=str((pd.Timestamp(end_date) + pd.Timedelta(days=1)).date()), interval="1d", auto_adjust=False, actions=False, progress=False)
                     if isinstance(h.columns, pd.MultiIndex):
                         h.columns = h.columns.get_level_values(-1)
                     trades = backtest_one(
@@ -170,6 +172,10 @@ elif section == "🧪 歷史回測":
                         require_above200=bool(require_above200),
                         max_bias20=float(max_bias20),
                     )
+                    if not trades.empty:
+                        start_ts = pd.Timestamp(start_date)
+                        end_ts = pd.Timestamp(end_date)
+                        trades = trades[(pd.to_datetime(trades["signal_date"]) >= start_ts) & (pd.to_datetime(trades["exit_date"]) <= end_ts)].copy()
                     if not trades.empty:
                         all_trades.append(trades)
                     s = summarize_trades(trades)
