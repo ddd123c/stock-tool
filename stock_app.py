@@ -5,6 +5,7 @@ import pandas as pd
 from chip_data import fetch_all_weekly_chip_rankings
 from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
+from quant_research import research_features, score_features
 
 st.set_page_config(page_title="台股 Quant Screener V4.7", layout="wide")
 st.title("📊 台股 Quant Screener V4.7")
@@ -108,9 +109,28 @@ if universe == "手動輸入":
     stocks = stocks[stocks["code"].isin(wanted)].copy()
 stocks["ticker"] = stocks["code"].map(lambda x: f"{x}.TW")
 
-section = st.radio("功能", ["🚀 200MA 即時量化篩選", "📈 神秘金字塔｜每週大股東", "🏛️ 法人連續買超", "📰 新聞報告"], horizontal=True, label_visibility="collapsed")
+section = st.radio("功能", ["🚀 200MA 即時量化篩選", "🔬 量化研究", "📈 神秘金字塔｜每週大股東", "🏛️ 法人連續買超", "📰 新聞報告"], horizontal=True, label_visibility="collapsed")
 
-if section == "🚀 200MA 即時量化篩選":
+if section == "🔬 量化研究":
+    st.info("獨立研究模組：只新增研究因子與排序，不修改既有 200MA、突破第幾天、法人與大股東功能。研究分數僅供排序，尚未宣稱高勝率。")
+    research_codes = st.text_input("研究股票代號（逗號分隔）", value="8131,0052,6449", key="research_codes")
+    if st.button("🔬 執行量化研究", type="primary", key="research_run"):
+        wanted = [x.strip() for x in research_codes.split(",") if x.strip()]
+        rows = []
+        for code in wanted:
+            try:
+                h = yf.download(f"{code}.TW", period="2y", interval="1d", auto_adjust=False, actions=False, progress=False)
+                if isinstance(h.columns, pd.MultiIndex): h.columns = h.columns.get_level_values(0)
+                f = research_features(h)
+                if f:
+                    rows.append({"代號": code, "研究分": round(score_features(f),1), "20D報酬%": round(f["ret20"]*100,2), "60D報酬%": round(f["ret60"]*100,2), "120D報酬%": round(f["ret120"]*100,2), "12M報酬%": round(f["ret252"]*100,2), "單日量衝擊": round(f["volume_shock"],2), "5D/20D量比": round(f["volume_ratio_5_20"],2), "20D年化波動%": round(f["volatility20_ann"]*100,2), "20D乖離%": round(f["bias20"],2), "20日突破": "是" if f["breakout20"] else "否", "站上200MA": "是" if f["above200"] else "否"})
+            except Exception as e: st.warning(f"{code} 抓取失敗：{e}")
+        if rows:
+            out = pd.DataFrame(rows).sort_values("研究分", ascending=False)
+            st.dataframe(out, use_container_width=True, hide_index=True)
+            st.caption("研究分目前由 20D突破、200MA、20/60/120/252D動能、量能衝擊、乖離與波動組成。券商分點、融資與當沖尚未接入，避免影響既有功能。")
+        else: st.warning("沒有足夠的研究資料。")
+elif section == "🚀 200MA 即時量化篩選":
     def _technical_live_panel():
         st.info("這一頁只抓技術價格資料，不抓法人、不抓大戶、不抓新聞。200MA 按永豐設定：200 個交易日、SMA、原始收盤價；「近5日突破」以突破當天為第1個交易日，第6個交易日開始移除。『全部』只顯示最近 5 個交易日內曾突破 200MA 的標的；突破滿第 6 個交易日即移除。其他策略再依條件篩選。請手動按「🔄 立即掃描」更新。")
         c1, c2 = st.columns([1, 4])
