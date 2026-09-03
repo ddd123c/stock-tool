@@ -6,9 +6,10 @@ from chip_data import fetch_all_weekly_chip_rankings
 from institution_data import get_institution_streaks
 from quant_engine import compute_indicators, technical_score, strategy_flags
 from quant_research import research_features, score_features
+from backtest import backtest_one, summarize_trades, benchmark_return
 
-st.set_page_config(page_title="台股 Quant Screener V4.7", layout="wide")
-st.title("📊 台股 Quant Screener V4.7")
+st.set_page_config(page_title="台股 Quant Screener V4.8", layout="wide")
+st.title("📊 台股 Quant Screener V4.8")
 st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法人連續買超 ＋ 新聞報告")
 
 with st.sidebar:
@@ -109,7 +110,7 @@ if universe == "手動輸入":
     stocks = stocks[stocks["code"].isin(wanted)].copy()
 stocks["ticker"] = stocks["code"].map(lambda x: f"{x}.TW")
 
-section = st.radio("功能", ["🚀 200MA 即時量化篩選", "🔬 量化研究", "📈 神秘金字塔｜每週大股東", "🏛️ 法人連續買超", "📰 新聞報告"], horizontal=True, label_visibility="collapsed")
+section = st.radio("功能", ["🚀 200MA 即時量化篩選", "🔬 量化研究", "🧪 歷史回測", "📈 神秘金字塔｜每週大股東", "🏛️ 法人連續買超", "📰 新聞報告"], horizontal=True, label_visibility="collapsed")
 
 if section == "🔬 量化研究":
     st.info("獨立研究模組：只新增研究因子與排序，不修改既有 200MA、突破第幾天、法人與大股東功能。研究分數僅供排序，尚未宣稱高勝率。")
@@ -130,6 +131,83 @@ if section == "🔬 量化研究":
             st.dataframe(out, use_container_width=True, hide_index=True)
             st.caption("研究分目前由 20D突破、200MA、20/60/120/252D動能、量能衝擊、乖離與波動組成。券商分點、融資與當沖尚未接入，避免影響既有功能。")
         else: st.warning("沒有足夠的研究資料。")
+
+elif section == "🧪 歷史回測":
+    st.info("回測只使用歷史 OHLCV。訊號在當日收盤後才成立，因此一律以「下一個交易日開盤」進場，持有 N 個完整交易日後以當日收盤出場，避免偷看未來資料。")
+    backtest_codes = st.text_input("回測股票代號（逗號分隔）", value="2330,2603,3017,3605,6446", key="backtest_codes")
+    c1, c2 = st.columns(2)
+    with c1:
+        start_date = st.date_input("回測開始日", value=pd.Timestamp("2020-01-01"), key="bt_start")
+        holding_days = st.selectbox("持有交易日", [5, 10, 20], index=0, key="bt_hold")
+    with c2:
+        end_date = st.date_input("回測結束日", value=pd.Timestamp.today().normalize(), key="bt_end")
+        volume_multiple = st.number_input("爆量門檻（20日均量倍數）", min_value=0.5, value=2.5, step=0.1, key="bt_vol")
+    require_above200 = st.checkbox("要求站上 200MA", value=True, key="bt_200")
+    max_bias20 = st.number_input("20日乖離上限（%）", min_value=-100.0, value=25.0, step=1.0, key="bt_bias")
+
+    if start_date >= end_date:
+        st.error("回測開始日必須早於結束日。")
+    elif st.button("🧪 開始回測", type="primary", key="bt_run"):
+        codes = [x.strip().replace(".TW", "").replace(".TWO", "") for x in backtest_codes.split(",") if x.strip()]
+        codes = list(dict.fromkeys(codes))
+        if not codes or any(not x.isdigit() for x in codes):
+            st.error("請輸入純數字台股代號，例如 2330,2603,6446。")
+        else:
+            all_trades = []
+            summaries = []
+            progress = st.progress(0, text="準備下載歷史資料...")
+            for n, code in enumerate(codes, start=1):
+                try:
+                    h = yf.download(f"{code}.TW", start=str(start_date), end=str(end_date + pd.Timedelta(days=1)), interval="1d", auto_adjust=False, actions=False, progress=False)
+                    if isinstance(h.columns, pd.MultiIndex):
+                        h.columns = h.columns.get_level_values(-1)
+                    trades = backtest_one(
+                        h,
+                        ticker=code,
+                        holding_days=int(holding_days),
+                        breakout_lookback=20,
+                        volume_multiple=float(volume_multiple),
+                        require_above200=bool(require_above200),
+                        max_bias20=float(max_bias20),
+                    )
+                    if not trades.empty:
+                        all_trades.append(trades)
+                    s = summarize_trades(trades)
+                    summaries.append({
+                        "代號": code,
+                        "完整交易數": s.get("trades", 0),
+                        "勝率%": round(s.get("win_rate", float("nan")) * 100, 2) if pd.notna(s.get("win_rate")) else None,
+                        "平均報酬%": round(s.get("avg_return", float("nan")) * 100, 2) if pd.notna(s.get("avg_return")) else None,
+                        "中位數報酬%": round(s.get("median_return", float("nan")) * 100, 2) if pd.notna(s.get("median_return")) else None,
+                        "最佳%": round(s.get("best_return", float("nan")) * 100, 2) if pd.notna(s.get("best_return")) else None,
+                        "最差%": round(s.get("worst_return", float("nan")) * 100, 2) if pd.notna(s.get("worst_return")) else None,
+                        "Profit Factor": round(s.get("profit_factor", float("nan")), 2) if pd.notna(s.get("profit_factor")) else None,
+                        "交易Sharpe(描述性)": round(s.get("sharpe", float("nan")), 2) if pd.notna(s.get("sharpe")) else None,
+                    })
+                except Exception as e:
+                    summaries.append({"代號": code, "完整交易數": 0, "錯誤": str(e)})
+                progress.progress(n / len(codes), text=f"回測進度：{n}/{len(codes)}")
+            progress.empty()
+
+            summary_df = pd.DataFrame(summaries)
+            if not summary_df.empty:
+                st.subheader("📊 回測摘要")
+                st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+            if all_trades:
+                trades_df = pd.concat(all_trades, ignore_index=True)
+                overall = summarize_trades(trades_df)
+                st.subheader("📈 全部交易合併")
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("完整交易", overall["trades"])
+                m2.metric("勝率", f"{overall['win_rate']*100:.2f}%")
+                m3.metric("平均報酬", f"{overall['avg_return']*100:.2f}%")
+                m4.metric("Profit Factor", f"{overall['profit_factor']:.2f}" if np.isfinite(overall['profit_factor']) else "∞")
+                st.dataframe(trades_df, use_container_width=True, hide_index=True)
+                st.caption("注意：目前是逐筆交易統計，不含手續費、交易稅、滑價與部位大小配置；交易Sharpe僅作描述性參考，不能當成完整投資組合Sharpe。")
+            else:
+                st.warning("這組條件在指定期間沒有完成的交易。")
+
 elif section == "🚀 200MA 即時量化篩選":
     def _technical_live_panel():
         st.info("這一頁只抓技術價格資料，不抓法人、不抓大戶、不抓新聞。200MA 按永豐設定：200 個交易日、SMA、原始收盤價；「近5日突破」以突破當天為第1個交易日，第6個交易日開始移除。『全部』只顯示最近 5 個交易日內曾突破 200MA 的標的；突破滿第 6 個交易日即移除。其他策略再依條件篩選。請手動按「🔄 立即掃描」更新。")
@@ -194,7 +272,6 @@ elif section == "🏛️ 法人連續買超":
                 merged["代號"] = merged["code"].astype(str)
                 merged = merged.merge(inst, on="代號", how="left")
                 merged = merged.drop(columns=["code"]).rename(columns={"name":"股票"})
-                # 只顯示法人買超；法人連買天數 <= 0 的賣超/非買超股票不列入。
                 merged = merged[merged["法人連買天數"].fillna(0) > 0].copy()
                 merged = merged.sort_values(["法人連買天數","外資5日累計(張)"], ascending=[False,False])
                 st.success(f"共取得 {len(merged)} 檔法人連續買超")
