@@ -9,141 +9,139 @@ MA_WINDOWS = (5, 10, 15, 20, 60, 200)
 def _num(s):
     return pd.to_numeric(s, errors="coerce")
 
+def _normalize_taipei_date(value):
+    """Convert a market timestamp to a timezone-naive Taipei date."""
+    ts = pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        ts = ts.tz_convert("Asia/Taipei").tz_localize(None)
+    return ts.normalize()
+
+
 def compute_indicators(df: pd.DataFrame, live_price: float | None = None, live_timestamp=None) -> dict | None:
+    """
+    Compute indicators using a strict 200-observation SMA.
+
+    Price convention: Yahoo Finance Close (not Adj Close). Sort and deduplicate
+    daily bars, ignore rows without a valid Close, and only substitute an
+    intraday quote when its timestamp belongs to today's Taipei date.
+    """
     if df is None or df.empty:
         return None
+
     x = df.copy()
     x.columns = [str(c).strip().lower() for c in x.columns]
-    for c in ("close", "volume"):
-        if c not in x.columns:
-            return None
-        x[c] = _num(x[c])
+    if "close" not in x.columns:
+        return None
+    if "volume" not in x.columns:
+        x["volume"] = 0
 
-    # 永豐看盤使用的是「非還原日」：200MA 直接以原始收盤價計算。
-    # 不使用 Yahoo Adj Close，也不做現金股利、股票股利或分割還原。
-    # 這樣才能對齊永豐日K圖上的 200T，例如 2449 京元電子。
-    x["close_raw"] = _num(x["close"])
-    close = x["close_raw"].copy()
+    x["close"] = _num(x["close"])
+    x["volume"] = _num(x["volume"]).fillna(0)
 
-    x["close_adjusted"] = close
-    x = x.dropna(subset=["close_adjusted"])
-    close = x["close_adjusted"]
-    volume = x["volume"].fillna(0)
-
-    if len(close) < 200:
+    # The index must represent trading dates. Sort and keep one bar per date,
+    # so duplicate/out-of-order rows cannot shift the SMA window.
+    try:
+        x.index = pd.DatetimeIndex(pd.to_datetime(x.index))
+    except Exception:
+        return None
+    if x.index.tz is not None:
+        x.index = x.index.tz_convert("Asia/Taipei").tz_localize(None)
+    x = x.sort_index()
+    x = x.loc[~x.index.duplicated(keep="last")]
+    x = x.dropna(subset=["close"])
+    if x.empty:
         return None
 
-    # 200MA 基準（對齊永豐看盤設定）：200 個「交易日」的原始收盤價 SMA。
-    #
-    # 重要：
-    # - 只使用 Yahoo Finance 的 Close，不使用 Adj Close。
-    # - 不把週末、國定假日、颱風休市等非交易日算進 200 天。
-    # - 每次手動掃描都重新取得最新日線，因此 200MA 會隨交易日更新。
-    # - 若今日已經有 Yahoo 日K資料，今日 Close 就是第 200 個交易日的值。
-    # - 若今日尚未形成日K，但有確認為「今天」的即時價格，才暫時以今日最新價作為今日 Close。
-    # - 若今天不是交易日，完全不加入 live price，直接使用上一個交易日的 Close。
-    historical_close = close.reset_index(drop=True).astype(float)
+    # Only raw Close is used. Adj Close is deliberately ignored.
+    close = x["close"].astype(float).copy()
+    volume = x["volume"].astype(float).copy()
 
-    use_live = live_price is not None
-    live_is_today = False
     today = pd.Timestamp.now(tz="Asia/Taipei").normalize().tz_localize(None)
+    use_live_today = False
+    if live_price is not None and live_timestamp is not None:
+        try:
+            live_day = _normalize_taipei_date(live_timestamp)
+            live_value = float(live_price)
+            use_live_today = live_day == today and np.isfinite(live_value) and live_value > 0
+        except (TypeError, ValueError, OverflowError):
+            use_live_today = False
 
-    if use_live and live_timestamp is not None:
-        lt = pd.Timestamp(live_timestamp)
-        if lt.tzinfo is not None:
-            lt = lt.tz_convert("Asia/Taipei").tz_localize(None)
+    # Build one close per actual available trading bar. If today's daily bar
+    # exists, replace its Close with the latest intraday quote; otherwise add
+    # today's quote once. Never append an old/stale quote or a weekend quote.
+    analysis = pd.DataFrame({"close": close, "volume": volume})
+    if use_live_today:
+        today_rows = analysis.index.normalize() == today
+        if today_rows.any():
+            analysis.loc[analysis.index[today_rows][-1], "close"] = live_value
         else:
-            lt = lt.normalize()
-        live_is_today = lt.normalize() == today
+            analysis.loc[today] = {"close": live_value, "volume": 0.0}
+            analysis = analysis.sort_index()
 
-    if use_live and live_is_today:
-        live_price_value = float(live_price)
-
-        # 日線已有今天：替換最後一筆，避免把今天重複算兩次。
-        last_day = None
-        if len(x.index) > 0:
-            raw_last = pd.Timestamp(x.index[-1])
-            if raw_last.tzinfo is not None:
-                raw_last = raw_last.tz_convert("Asia/Taipei").tz_localize(None)
-            last_day = raw_last.normalize()
-
-        if last_day == today:
-            analysis_close = historical_close.copy()
-            analysis_close.iloc[-1] = live_price_value
-        else:
-            # 今天尚未形成 Yahoo 日K，才新增今天這個交易日。
-            analysis_close = pd.concat(
-                [historical_close, pd.Series([live_price_value], dtype=float)],
-                ignore_index=True
-            )
-    else:
-        # 非交易日：不新增任何資料。
-        analysis_close = historical_close.copy()
-
-    # 保留足夠的交易日做 200MA 以及 5D/20D 斜率比較；
-    # 最後一筆 200MA 永遠只平均最近 200 個實際交易日。
-    analysis_close = analysis_close.dropna().tail(260).reset_index(drop=True)
-
-    if len(analysis_close) < 200:
+    analysis = analysis.dropna(subset=["close"])
+    if len(analysis) < 200:
         return None
 
-    # 永豐設定：200 / SMA / 收盤價
-    ma = {n: analysis_close.rolling(n, min_periods=n).mean() for n in MA_WINDOWS}
-    m = {n: float(ma[n].iloc[-1]) for n in MA_WINDOWS}
+    # 200MA is the simple average of exactly the latest 200 valid trading bars.
+    # Do not use min_periods fallbacks or Adj Close.
+    close_series = analysis["close"].astype(float)
+    ma = {n: close_series.rolling(window=n, min_periods=n).mean() for n in MA_WINDOWS}
+    last_ma = {n: float(series.iloc[-1]) for n, series in ma.items()}
     ma200 = ma[200]
-    ma200_now = m[200]
+    ma200_now = last_ma[200]
+
     ma200_5d = float(ma200.iloc[-6]) if len(ma200) >= 206 and pd.notna(ma200.iloc[-6]) else np.nan
     ma200_20d = float(ma200.iloc[-21]) if len(ma200) >= 221 and pd.notna(ma200.iloc[-21]) else np.nan
-
     slope20 = (ma200_now / ma200_20d - 1.0) if pd.notna(ma200_20d) and ma200_20d else 0.0
     slope5 = (ma200_now / ma200_5d - 1.0) if pd.notna(ma200_5d) and ma200_5d else 0.0
 
-    c = float(analysis_close.iloc[-1])
-    prev_c = float(analysis_close.iloc[-2]) if len(analysis_close) >= 2 else np.nan
+    c = float(close_series.iloc[-1])
+    prev_c = float(close_series.iloc[-2]) if len(close_series) >= 2 else np.nan
     prev_ma200 = float(ma200.iloc[-2]) if len(ma200) >= 2 and pd.notna(ma200.iloc[-2]) else np.nan
-
     crossed_up = pd.notna(prev_c) and pd.notna(prev_ma200) and prev_c <= prev_ma200 and c > ma200_now
     crossed_down = pd.notna(prev_c) and pd.notna(prev_ma200) and prev_c >= prev_ma200 and c < ma200_now
 
-    above = analysis_close > ma200
-    run = 0
+    above = close_series > ma200
     current_above = bool(above.iloc[-1])
+    run = 0
     for v in reversed(above.tolist()):
         if bool(v) == current_above:
             run += 1
         else:
             break
 
-    vol5 = float(volume.tail(5).mean())
-    vol20 = float(volume.tail(20).mean())
+    vol5 = float(analysis["volume"].tail(5).mean())
+    vol20 = float(analysis["volume"].tail(20).mean())
     volume_ratio = vol5 / vol20 if vol20 else 0.0
 
-    ma20 = m[20]
-    std20 = float(analysis_close.rolling(20).std().iloc[-1])
+    ma20 = last_ma[20]
+    std20 = float(close_series.rolling(20, min_periods=20).std().iloc[-1])
     upper = ma20 + 2 * std20
     lower = ma20 - 2 * std20
     width = (upper - lower) / ma20 if ma20 else np.nan
-    prev20high = float(analysis_close.iloc[-21:-1].max()) if len(analysis_close) >= 21 else np.nan
+    prev20high = float(close_series.iloc[-21:-1].max()) if len(close_series) >= 21 else np.nan
 
-    # 「近5日突破」定義：突破當天就是第1個交易日。
-    # 第2～第5個實際交易日仍保留；第6個實際交易日開始移除。
-    # analysis_close 只含 Yahoo 實際存在的日K交易日，因此週末、國定假日、
-    # 颱風停班停市等沒有日K的日期不會被算進這 5 天。
+    # A valid fresh breakout is a close/quote crossing its contemporaneous SMA.
+    # The breakout session is day 1; retain only the latest 5 trading bars.
     recent_cross = False
     cross_days_ago = None
     breakout_day_number = None
-    max_lookback = min(5, len(analysis_close) - 1)
+    max_lookback = min(5, len(close_series) - 1)
     for i in range(1, max_lookback + 1):
-        if analysis_close.iloc[-i-1] <= ma200.iloc[-i-1] and analysis_close.iloc[-i] > ma200.iloc[-i]:
+        prev_close_i = close_series.iloc[-i-1]
+        curr_close_i = close_series.iloc[-i]
+        prev_ma_i = ma200.iloc[-i-1]
+        curr_ma_i = ma200.iloc[-i]
+        if pd.notna(prev_ma_i) and pd.notna(curr_ma_i) and prev_close_i <= prev_ma_i and curr_close_i > curr_ma_i:
             recent_cross = True
             cross_days_ago = i - 1
             breakout_day_number = i
             break
 
     recent_retest = False
-    if c > ma200_now and len(analysis_close) >= 6:
-        for i in range(1, min(6, len(analysis_close)-1)):
-            if analysis_close.iloc[-i] <= ma200.iloc[-i] * 1.01:
+    if c > ma200_now and len(close_series) >= 6:
+        for i in range(1, min(6, len(close_series) - 1)):
+            if close_series.iloc[-i] <= ma200.iloc[-i] * 1.01:
                 recent_retest = True
                 break
 
@@ -160,7 +158,8 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None, live_t
 
     return {
         "close": c, "prev_close": prev_c,
-        "ma5": m[5], "ma10": m[10], "ma15": m[15], "ma20": m[20], "ma60": m[60], "ma200": ma200_now,
+        "ma5": last_ma[5], "ma10": last_ma[10], "ma15": last_ma[15], "ma20": last_ma[20],
+        "ma60": last_ma[60], "ma200": ma200_now,
         "ma200_slope5": float(slope5), "ma200_slope20": float(slope20),
         "bias20": float((c / ma20 - 1) * 100),
         "vol5": vol5, "vol20": vol20, "volume_ratio": float(volume_ratio),
