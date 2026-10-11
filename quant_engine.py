@@ -46,13 +46,20 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None, live_t
         return None
     if x.index.tz is not None:
         x.index = x.index.tz_convert("Asia/Taipei").tz_localize(None)
+    # Normalize to one Taiwan trading-date key before deduplication.
+    # This prevents bars with different times on the same date from counting twice.
+    x.index = x.index.normalize()
     x = x.sort_index()
     x = x.loc[~x.index.duplicated(keep="last")]
     x = x.dropna(subset=["close"])
     if x.empty:
         return None
 
-    # Only raw Close is used. Adj Close is deliberately ignored.
+    # Latest 200MA convention:
+    # - use raw Close, never Adj Close;
+    # - one observation per Taiwan trading date;
+    # - when a valid quote timestamped today exists, use it as today's price;
+    # - average exactly the latest 200 observations (199 prior closes + today's quote intraday).
     close = x["close"].astype(float).copy()
     volume = x["volume"].astype(float).copy()
 
