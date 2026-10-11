@@ -13,6 +13,18 @@ st.set_page_config(page_title="台股 200MA 即時量化篩選 V3.0", layout="wi
 st.sidebar.markdown("---")
 st.sidebar.subheader("🧪 200MA 基準驗證")
 st.sidebar.caption("先用已知答案驗證計算，再進行全台股掃描。")
+with st.sidebar.expander("🔎 查看 200MA 計算程式碼", expanded=False):
+    st.markdown(
+        "目前掃描使用 `quant_engine.py` 的 `calculate_200ma_signal()`。"
+        "盤中 200MA 定義為最近 199 個已完成交易日原始收盤價，加上今日即時價，再除以 200。"
+    )
+    st.code(
+        """completed = _completed_close(df)  # 只保留已完成交易日的 Close
+window = completed.tail(199)
+live_ma200 = float((window.sum() + current_price) / 200.0)""",
+        language="python",
+    )
+    st.caption("完整函式：GitHub → quant_engine.py → calculate_200ma_signal()；歷史收盤價來源為 Yahoo Finance，盤中現價使用交易所行情。")
 
 st.title("🚀 台股 Quant Screener V3.0")
 st.caption("200MA 專用掃描：歷史日線 + 台灣交易所即時價格。⚡ 本頁完全不抓法人／大股東資料，縮短掃描時間。")
