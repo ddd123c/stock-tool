@@ -12,6 +12,22 @@ st.caption("200MA 即時技術篩選 ＋ 神秘金字塔每週大股東 ＋ 法�
 
 with st.sidebar:
     st.header("⚙️ 200MA 掃描設定")
+    with st.expander("🔎 查看 200MA 計算程式碼", expanded=False):
+        st.markdown(
+            "完整計算位於 `quant_engine.py` 的 `compute_indicators()`。"
+            "目前使用原始 `Close`，以最近 200 個有效交易日收盤價計算簡單移動平均（SMA）。"
+        )
+        st.code(
+            """close = pd.to_numeric(df["Close"], errors="coerce").dropna()
+close = close.sort_index()
+ma200 = close.rolling(window=200, min_periods=200).mean()
+latest_200ma = float(ma200.iloc[-1])""",
+            language="python",
+        )
+        st.caption(
+            "這是核心公式示意；完整函式還包含日期去重、當日即時價處理與突破判斷。"
+            "GitHub：quant-v2 / quant_engine.py"
+        )
     universe = st.radio("股票池", ["全台股", "手動輸入"])
     min_vol = st.number_input("5日均量下限（張）", min_value=0, value=1000, step=500)
     strategy_filter = st.selectbox("200MA策略", ["全部", "只看今日突破", "只看近5日突破", "只看回踩再上"])
