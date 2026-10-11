@@ -56,12 +56,16 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None, live_t
         return None
 
     # Latest 200MA convention:
-    # - use raw Close, never Adj Close;
-    # - one observation per Taiwan trading date;
-    # - when a valid quote timestamped today exists, use it as today's price;
-    # - average exactly the latest 200 observations (199 prior closes + today's quote intraday).
+    # - use Close, never Adj Close;
+    # - Yahoo Close may already reflect historical stock splits, so reverse
+    #   reported split ratios for the 200MA series to retain nominal prices;
+    # - use one observation per Taiwan trading date and exactly 200 observations.
     close = x["close"].astype(float).copy()
     volume = x["volume"].astype(float).copy()
+    if "stock splits" in x.columns:
+        stock_splits = _num(x["stock splits"]).fillna(0.0).astype(float)
+    else:
+        stock_splits = pd.Series(0.0, index=x.index, dtype=float)
 
     today = pd.Timestamp.now(tz="Asia/Taipei").normalize().tz_localize(None)
     use_live_today = False
@@ -76,23 +80,30 @@ def compute_indicators(df: pd.DataFrame, live_price: float | None = None, live_t
     # Build one close per actual available trading bar. If today's daily bar
     # exists, replace its Close with the latest intraday quote; otherwise add
     # today's quote once. Never append an old/stale quote or a weekend quote.
-    analysis = pd.DataFrame({"close": close, "volume": volume})
+    analysis = pd.DataFrame({"close": close, "volume": volume, "stock_splits": stock_splits})
     if use_live_today:
         today_rows = analysis.index.normalize() == today
         if today_rows.any():
             analysis.loc[analysis.index[today_rows][-1], "close"] = live_value
         else:
-            analysis.loc[today] = {"close": live_value, "volume": 0.0}
+            analysis.loc[today] = {"close": live_value, "volume": 0.0, "stock_splits": 0.0}
             analysis = analysis.sort_index()
 
     analysis = analysis.dropna(subset=["close"])
     if len(analysis) < 200:
         return None
 
-    # 200MA is the simple average of exactly the latest 200 valid trading bars.
-    # Do not use min_periods fallbacks or Adj Close.
     close_series = analysis["close"].astype(float)
-    ma = {n: close_series.rolling(window=n, min_periods=n).mean() for n in MA_WINDOWS}
+    # Build a separate series for the latest 200MA only. Yahoo's historical
+    # Close is commonly split-adjusted even with auto_adjust=False; multiply
+    # pre-event observations by each reported split ratio to undo that scaling.
+    ma200_close = close_series.copy()
+    for event_date, ratio in analysis["stock_splits"].fillna(0.0).items():
+        if np.isfinite(ratio) and ratio > 0 and not np.isclose(ratio, 1.0):
+            ma200_close.loc[ma200_close.index < event_date] *= float(ratio)
+
+    ma = {n: close_series.rolling(window=n, min_periods=n).mean() for n in MA_WINDOWS if n != 200}
+    ma[200] = ma200_close.rolling(window=200, min_periods=200).mean()
     last_ma = {n: float(series.iloc[-1]) for n, series in ma.items()}
     ma200 = ma[200]
     ma200_now = last_ma[200]
